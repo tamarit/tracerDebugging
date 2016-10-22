@@ -1,0 +1,1 @@
+-record(state,{listVariables, maxLengthVariable, freeVariable, acc}).

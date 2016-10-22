@@ -21,8 +21,7 @@ loop(State) ->
 			end;
 			
 		{freeVariable, Pid} ->
-			NewState = State#state{maxLengthVariable = biggestVariable(State#state.listVariables, "", 0)},
-			Pid ! {ok, "The free Variable is create"},
+			NewState = State#state{maxLengthVariable = biggest_variable(State#state.listVariables, "", 0)},
 			loop(NewState);
 
 		{newFreeVariable, Pid} ->
@@ -38,20 +37,19 @@ loop(State) ->
 			erlang:exit(self(), {error, {"Title: Error option.~n", Other}})
 
 	after
-		50000  ->
-			% io:format("Refresc New state is:  ~p~n",[State]),
+		80000  ->
 			loop(State)
 
 	end.
 
-biggestVariable([Hd|Ld], Value, Leng) ->
+biggest_variable([Hd|Ld], Value, Leng) ->
 	SizeVariable = string:len(Hd),
 	if
 		 SizeVariable > Leng ->
-			biggestVariable(Ld, Hd, SizeVariable);
+			biggest_variable(Ld, Hd, SizeVariable);
 		true ->
-			biggestVariable(Ld, Value, Leng)
+			biggest_variable(Ld, Value, Leng)
 	end;
 
-biggestVariable([], Value, _) ->
+biggest_variable([], Value, _) ->
 	Value.

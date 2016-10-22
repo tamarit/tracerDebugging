@@ -1,0 +1,1 @@
+-record(ann_state, {id = 0, modify = true }).
