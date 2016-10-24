@@ -20,7 +20,7 @@ loop(State) ->
 
 		{newBeginTrace, Begin} ->
 			io:format("Entro ~p~n",[Begin]),
-			{ok, Refbegin} = dets:open_file("stackbegins.file",[]), %State#state.stackbegins,
+			{ok, Refbegin} = dets:open_file("stackbegins.file",[]), 
 			Acc = State#state.idStackBegins + 1,
 			dets:insert(Refbegin, {Acc, Begin}),
 			dets:close(Refbegin),
