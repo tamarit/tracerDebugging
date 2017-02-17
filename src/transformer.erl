@@ -575,7 +575,14 @@ disable_modify_in_patterns(generator, Node) ->
 			erl_syntax:generator_pattern(Node)),
 	Body = 
 		erl_syntax:generator_body(Node),
-	erl_syntax:generator(Pattern, Body).
+	erl_syntax:generator(Pattern, Body);
+disable_modify_in_patterns(binary_generator, Node) ->
+	Pattern = 
+		disable_modify(
+			erl_syntax:binary_generator_pattern(Node)),
+	Body = 
+		erl_syntax:binary_generator_body(Node),
+	erl_syntax:binary_generator(Pattern, Body).
 
 
 disable_modify(none) ->
@@ -599,7 +606,7 @@ disable_modify_node(Node) ->
 
 expressions_with_patterns() ->
 	% binary_generator should be also in this list, but it does not appear in the erl_syntax:type/1 listing
-	[clause, generator, match_expr].
+	[clause, generator, match_expr, binary_generator].
 
 annotated_types() ->
 	[
@@ -614,7 +621,8 @@ annotated_types() ->
 not_annotated_types() ->
 	[
 			annotated_type, arity_qualifier, atom
-		, 	attribute, binary_field, bitstring_type
+		, 	attribute, binary_field, binary_generator
+		, 	bitstring_type
 		, 	char, class_qualifier, clause, conjunction
 		, 	comment, cond_expr, constrained_function_type
 		, 	constraint, disjunction, eof_marker

@@ -1,4 +1,4 @@
--module(dbg_free_vars_server). % Old dbg_system
+-module(dbg_free_vars_server). 
 
 -export([init/0]).
 
