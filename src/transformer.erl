@@ -600,7 +600,7 @@ disable_modify_node(Node) ->
 				[Ann#annotation{modify = false}]);
 		_ ->
 			io:format("Node without annotations: ~p\n", [Node]), 
-			[]
+			Node
 	end.
 
 
