@@ -664,7 +664,7 @@ inst_anno_form(Forms) ->
 					fun shuttle_inst_anno_form/1,
 					Forms
 				).
-	
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%		Fase instrumentacion	%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -672,7 +672,7 @@ shuttle_inst_anno_form(Form) ->
 	[Anno] = 
 		erl_syntax:get_ann(Form),
 	
-	InstNodeCatchClauseBody = 
+	InstNodeCatchClauseNewBody = 
 		case erl_syntax:type(Form) of
 			'clause' -> 
 				inst_catching_last_term(Form);
@@ -680,23 +680,23 @@ shuttle_inst_anno_form(Form) ->
 				Form
 		end,
 
-	InstNodeCatchClausePattern = 
+	InstNodeCatchNewClause = 
 		case lists:member(
-				erl_syntax:type(InstNodeCatchClauseBody), 
+				erl_syntax:type(InstNodeCatchClauseNewBody), 
 				expressions_with_patterns()) of
 			true ->
-				inst_pattern_clause(InstNodeCatchClauseBody);
+				inst_pattern_clause(InstNodeCatchClauseNewBody);
 			
 			false->
-				InstNodeCatchClauseBody
+				InstNodeCatchClauseNewBody
 		end,
 
-	InstNodeCatchClause = 
+	InstNodeCatch = 
 		case Anno#annotation.modify of
 			true ->
-				inst_catching_term(InstNodeCatchClausePattern);
+				inst_catching_term(InstNodeCatchNewClause);
 			false ->
-				InstNodeCatchClausePattern
+				InstNodeCatchNewClause
 		end.
 
 %%Anotar cualquier termino
