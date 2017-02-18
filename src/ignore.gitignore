@@ -1,0 +1,5 @@
+# Ignora todos los ficheros acabados en .beam
+*.beam
+
+#Ignora todos los ficheros que empiecen por "bg-" y acaben en ".jpg"
+bg-*.jpg
