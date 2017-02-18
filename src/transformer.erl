@@ -59,7 +59,14 @@ parse_transform(Forms, _Options) ->
 			fun annotate_form/2,
 			0,
 			FormsAnnBindings),
-	io:format("~p\n", [FormsAnn]),
+	?PVALUE("p", "Etiquetado", FormsAnn),
+
+	% InstForms = 
+	% 	lists:map(
+	% 		fun inst_anno_form/1,
+	% 		FormsAnn),
+	% ?PVALUE("p", "Arbol instrumentado", InstForms),
+
 	dbg_free_vars_server!exit,
 	Forms.
 		% ?PVALUE("p", "Arbol SyntaxTree", CreerSyntaxTree),
@@ -175,14 +182,184 @@ parse_transform(Forms, _Options) ->
 
 
 
-% creerNouveauNoeud(Noeud) ->
-% 	erl_syntax_lib:map(
-% 					fun lancerCreerNouveauNoeud/1,
-% 					Noeud
-% 				).
+inst_anno_form(Forms) ->
+	erl_syntax_lib:map(
+					fun shuttle_inst_anno_form/1,
+					Forms
+				).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%		Fase instrumentacion	%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+shuttle_inst_anno_form(Form) ->
 
-% lancerCreerNouveauNoeud(Noeud) ->
-% 	creerNouveauNoeud(erl_syntax:type(Noeud), Noeud).
+	[Anno] = 
+		erl_syntax:get_ann(Form),
+	
+	InstNodeCatch = 
+		case Anno#annotation.modify of
+			true ->
+				inst_catching_term(Form);
+			false ->
+				Form
+		end,
+
+	InstNodeCatchClause = 
+		case erl_syntax:type(InstNodeCatch) of
+			'clause' -> 
+				inst_catching_last_term(InstNodeCatch);
+			_ ->
+				InstNodeCatch
+		end,
+
+	InstNodeCatchClausePattern = 
+		case erl_syntax
+
+%%Anotar cualquier termino
+inst_catching_term(Term) ->
+	[Annotation] = 
+		erl_syntax:get_ann(Term),
+	FreeVariable = 
+		get_free_variable(),
+	erl_syntax:block_expr([	
+		func_send_begin(
+			dbg_tracer,
+			'begin', 
+			Term, 
+			Annotation),	
+		erl_syntax:match_expr(
+			FreeVariable, 
+			erl_syntax:catch_expr(Term)),
+		build_case_Error(FreeVariable),
+		func_send_begin(
+			dbg_tracer,
+			'end', 
+			Term, 
+			Annotation)]).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%Anota el ultimo termino del clause
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+inst_clause_body(Node) ->
+	erl_syntax:set_ann(		
+		erl_syntax:clause(
+			erl_syntax:clause_patterns(Node), 
+			erl_syntax:clause_guard(Node), 
+			inst_catching_last_term(
+				erl_syntax:clause_body(Node))),
+			[erl_syntax:get_ann(Node)]);
+
+inst_catching_last_term(ClauseBody) ->
+	BodyLast = 
+		lists:last(ClauseBody),
+	
+	BodyRemainder = 
+		lists:droplast(ClauseBody),
+	
+	BodyRemainder ++ [
+		inst_clause_body_last(BodyRemainder)].
+
+inst_clause_body_last(Term) ->
+	[Annotation] = 
+		erl_syntax:get_ann(Term),
+	FreeVariable = 
+		get_free_variable(),
+	erl_syntax:block_expr([	
+		func_send_begin(
+			dbg_tracer,
+			'begin', 
+			Term, 
+			Annotation), 											
+												
+	erl_syntax:match_expr(
+		FreeVariable, 
+		erl_syntax:catch_expr(Term)),
+		build_case_error(FreeVariable),
+		func_send_begin(
+			dbg_tracer,
+			'end', 
+			Term, 
+			Annotation),
+		Term]).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%% Send MSG process
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+func_send_begin(Process , TypeMsg, Term, Annotation) ->
+	build_send_process(Process, [
+		erl_syntax:atom('newExpresion'),
+		erl_syntax:list([
+			erl_syntax:atom(TypeMsg),
+			erl_syntax:integer(Annotation#annotation.id),
+			erl_syntax:string(Annotation#annotation.payload),
+			erl_syntax:list(Annotation#annotation.bindings),
+			erl_syntax:atom(erl_syntax:type(Term))])]).
+
+build_send_process(Process, Msg) ->
+	erl_syntax:application(
+		erl_syntax:atom(erlang) , 
+		erl_syntax:atom(send), 
+			[
+				erl_syntax:atom(Process),
+		 		erl_syntax:tuple(Msg)
+		 	]
+		 ).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+build_case_error(Term) ->
+	% dbg_free_vars_server ! {newFreeVariable, self()},
+	FreeVariable = 
+		get_free_variable(),
+	erl_syntax:case_expr(
+		 Term,
+		[ build_error(error, [Term, FreeVariable]),
+		  build_error(throw, [Term, FreeVariable]),
+		  build_error(exit,  [Term, FreeVariable]),
+		  build_error(other, [Term, FreeVariable])]).
+
+
+build_error(other, [Value, _]) ->
+	erl_syntax:clause(
+  		[Value], 
+  		none, 
+  		[buildSendProcess(
+  			dbg_tracer, 
+  			[erl_syntax:atom(newValueTerm), 
+  			Value]), 
+  		Value]);
+
+build_error(error, [Value, NewVariable]) ->
+	erl_syntax:clause([
+		erl_syntax:tuple([
+			erl_syntax:atom('ERROR'),  
+			NewVariable])],
+		none,
+		[buildSendProcess(
+			dbg_tracer, 
+			[Value])]);
+
+build_error(throw, [Value, NewVariable]) ->	
+	erl_syntax:clause([
+		erl_syntax:tuple([
+			erl_syntax:atom('THROW'),  
+			NewVariable])],
+		none,
+		[buildSendProcess(
+			dbg_tracer, 
+			[Value])]);
+	
+build_error(exit, [Value, NewVariable]) ->
+	erl_syntax:clause([
+		erl_syntax:tuple([
+			erl_syntax:atom('EXIT'), 
+			NewVariable])],
+		none,
+		[buildSendProcess(
+			dbg_tracer, 
+			[Value])]);
+	
+build_error(Other, [_]) ->
+	erl_syntax:clause([
+		none,
+		none,
+		none]).
 
 % creerNouveauNoeud('eof_marker', Noeud) ->
 % 	[Etiquette] = erl_syntax:get_ann(Noeud),
