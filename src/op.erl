@@ -1,8 +1,11 @@
 % c(transformer).
 % compile:file(op,[{parse_transform,transformer},verbose,report_errors,report_warnings]).
 -module(op).
--export([main/0]).
+-export([main/2]).
 
-main()->
-	List = [{1,2},{3,4},{5,6}],
-	[{X,Y}|| {X, Y} <- List].
+main(0, 0)->
+	0;
+main(0, X)->
+	X;
+main(X, Y)->
+	X+Y.

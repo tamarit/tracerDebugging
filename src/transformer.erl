@@ -61,11 +61,11 @@ parse_transform(Forms, _Options) ->
 			FormsAnnBindings),
 	?PVALUE("p", "Etiquetado", FormsAnn),
 
-	% InstForms = 
-	% 	lists:map(
-	% 		fun inst_anno_form/1,
-	% 		FormsAnn),
-	% ?PVALUE("p", "Arbol instrumentado", InstForms),
+	InstForms = 
+		lists:map(
+			fun inst_anno_form/1,
+			FormsAnn),
+	?PVALUE("p", "Arbol instrumentado", InstForms),
 
 	dbg_free_vars_server!exit,
 	Forms.
@@ -669,7 +669,7 @@ inst_anno_form(Forms) ->
 %%%		Fase instrumentacion	%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 shuttle_inst_anno_form(Form) ->
-	[Anno] = 
+	[Annotation] = 
 		erl_syntax:get_ann(Form),
 	
 	InstNodeCatchClauseNewBody = 
@@ -681,18 +681,15 @@ shuttle_inst_anno_form(Form) ->
 		end,
 
 	InstNodeCatchNewClause = 
-		case lists:member(
-				erl_syntax:type(InstNodeCatchClauseNewBody), 
-				expressions_with_patterns()) of
-			true ->
+		case erl_syntax:type(Form) of
+			function ->
 				inst_pattern_clause(InstNodeCatchClauseNewBody);
-			
-			false->
+			_ ->
 				InstNodeCatchClauseNewBody
 		end,
 
 	InstNodeCatch = 
-		case Anno#annotation.modify of
+		case Annotation#annotation.modify of
 			true ->
 				inst_catching_term(InstNodeCatchNewClause);
 			false ->
@@ -714,7 +711,7 @@ inst_catching_term(Term) ->
 		erl_syntax:match_expr(
 			FreeVariable, 
 			erl_syntax:catch_expr(Term)),
-		build_case_Error(FreeVariable),
+		build_case_error(FreeVariable),
 		func_send_begin(
 			dbg_tracer,
 			'end', 
@@ -730,7 +727,7 @@ inst_clause_body(Node) ->
 			erl_syntax:clause_guard(Node), 
 			inst_catching_last_term(
 				erl_syntax:clause_body(Node))),
-			[erl_syntax:get_ann(Node)]);
+			[erl_syntax:get_ann(Node)]).
 
 inst_catching_last_term(ClauseBody) ->
 	BodyLast = 
@@ -760,7 +757,7 @@ inst_clause_body_last(Term) ->
 		build_case_error(FreeVariable),
 		func_send_begin(
 			dbg_tracer,
-			'end', 
+			'begin-end', 
 			Term, 
 			Annotation),
 		Term]).
@@ -773,7 +770,7 @@ func_send_begin(Process , TypeMsg, Term, Annotation) ->
 		erl_syntax:list([
 			erl_syntax:atom(TypeMsg),
 			erl_syntax:integer(Annotation#annotation.id),
-			erl_syntax:string(Annotation#annotation.payload),
+			% erl_syntax:string(Annotation#annotation.payload),
 			erl_syntax:list(Annotation#annotation.bindings),
 			erl_syntax:atom(erl_syntax:type(Term))])]).
 
@@ -804,7 +801,7 @@ build_error(other, [Value, _]) ->
 	erl_syntax:clause(
   		[Value], 
   		none, 
-  		[buildSendProcess(
+  		[build_send_process(
   			dbg_tracer, 
   			[erl_syntax:atom(newValueTerm), 
   			Value]), 
@@ -816,7 +813,7 @@ build_error(error, [Value, NewVariable]) ->
 			erl_syntax:atom('ERROR'),  
 			NewVariable])],
 		none,
-		[buildSendProcess(
+		[build_send_process(
 			dbg_tracer, 
 			[Value])]);
 
@@ -826,7 +823,7 @@ build_error(throw, [Value, NewVariable]) ->
 			erl_syntax:atom('THROW'),  
 			NewVariable])],
 		none,
-		[buildSendProcess(
+		[build_send_process(
 			dbg_tracer, 
 			[Value])]);
 	
@@ -836,7 +833,7 @@ build_error(exit, [Value, NewVariable]) ->
 			erl_syntax:atom('EXIT'), 
 			NewVariable])],
 		none,
-		[buildSendProcess(
+		[build_send_process(
 			dbg_tracer, 
 			[Value])]);
 	
@@ -846,17 +843,142 @@ build_error(Other, [_]) ->
 		none,
 		none]).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%Instrumentacion de los patrones%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+inst_pattern_clause(Function) ->
+	[Annotation] = 
+		erl_syntax:get_ann(Function),
+	BuildName = 
+		erl_syntax:function_name(Function),
 
-  
-   
-  
- 
-  
-     
-         
-    
-       
-        
- 
+	Clauses = 
+		erl_syntax:function_clauses(Function),
+	
+	ListPatterns = 
+		inst_build_list_pattern(Clauses, []),
 
+	BuildClauses =
+		inst_pattern_clause_catch(Clauses, ListPatterns, []), 
+
+	BuildFunction = 
+		erl_syntax:function(
+			BuildName, 
+			BuildClauses),
+	
+	erl_syntax:set_ann(
+		BuildFunction, 
+		[Annotation]).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%Crea la lista con todos los patrones que tienen las clauses %%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+inst_build_list_pattern([], List) ->
+	List;
+
+inst_build_list_pattern([T|L], List) ->
+	inst_build_list_pattern(
+		[L], 
+		erl_syntax:clause_patterns(T) ++ List).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%Crea las nuevas clauses de la funcion con la instrumentacion%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+inst_pattern_clause_catch( [], ListPatterns, ListBuildClause) ->
+	ListBuildClause;
+
+inst_pattern_clause_catch( [T|L], ListPatterns, ListBuildClause) ->
+	Pattern = 
+		erl_syntax:clause_patterns(T),
+
+	ListOtherPattern =
+		lists:delete(
+			Pattern, 
+			ListPatterns),
+	
+	BlockCatch = 
+		build_block_exp_pattern(
+			lists:append(ListOtherPattern), 
+			[]),
+	
+	BuildClause = 
+		build_clause_block(
+			T, 
+			BlockCatch),
+
+	inst_pattern_clause_catch( 
+		[L], 
+		ListPatterns, 
+		[BuildClause] ++ ListBuildClause).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%Crea el nuevo nodo dada una clause %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+build_clause_block(Clause, BlockCatch) ->
+	[Annotation] = 
+		erl_syntax:get_ann(Clause),
+
+	BuildGuard = 
+		erl_syntax:clause_guard(Clause),
+
+	BuildPattern = 	
+		erl_syntax:clause_patterns(Clause),
+
+	Body = 
+		erl_syntax:clause_body(Clause),
+
+	BuildBody = BlockCatch ++ Body,
+
+	BuildClause = 
+		erl_syntax:clause(
+			BuildPattern, 
+			BuildGuard, 
+			BuildBody),
+
+	erl_syntax:set_ann(
+		BuildClause, 
+		[Annotation]).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%Genera el bock_exp de cada elemento de la lista de patrones%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+build_block_exp_pattern([], ListBlockExpPattern) ->
+	erl_syntax:block_expr([	
+		ListBlockExpPattern]);
+
+build_block_exp_pattern([T,L], ListBlockExpPattern) ->
+	[Annotation] = 
+		erl_syntax:get_ann(T),
+	
+	FreeVariable = 
+		get_free_variable(),
+	
+	BlockExpPattern =
+		erl_syntax:block_expr([	
+			func_send_begin(
+				dbg_tracer,
+				'begin_pattern', 
+				T, 
+				Annotation),	
+			erl_syntax:match_expr(
+				FreeVariable, 
+				erl_syntax:catch_expr(T)),
+			build_case_error(FreeVariable),
+			func_send_begin(
+				dbg_tracer,
+				'end_pattern', 
+				T, 
+				Annotation)]),
+
+	build_block_exp_pattern(
+		[L],  
+		[BlockExpPattern] ++ ListBlockExpPattern).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%Genera La lista de patrones para construir los  nuevos clauses
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  build_list_pattern([], List) ->
+  	List;  
+  
+  build_list_pattern([T|L], List) ->
+  	erl_syntax:clause_patterns(T) ++ List, 
+  	build_list_pattern([L], List).
