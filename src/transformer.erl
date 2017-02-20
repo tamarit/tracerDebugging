@@ -1,6 +1,10 @@
 -module(transformer).
 -export([parse_transform/2]).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% macros definitions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 -define( debug, true ).
 -ifdef ( debug ).
 	-define( PVALUE(_Type, _Mess, _Value), 
@@ -33,6 +37,10 @@
 	-define( PRINT( _Print ), void ).
 -endif.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% records definitions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 -record(
 	annotation, 
 	{	
@@ -48,439 +56,26 @@
 parse_transform(Forms, _Options) ->
 	unregister_servers(),
     register_servers(),
-	%Transformar los nodos a formato SyntaxTree
+	% Add annotations with binding information
 	FormsAnnBindings = 
 		lists:map(
 			fun annotate_bindings_form/1,
 			Forms),
-	% io:format("~p\n", [FormsAnnBindings]),
+	% Add annotations with identifier and instrumentation policy information
 	{FormsAnn, _} = 
 		lists:mapfoldl(
 			fun annotate_form/2,
 			0,
 			FormsAnnBindings),
-	?PVALUE("p", "Etiquetado", FormsAnn),
-
+	% ?PVALUE("p", "Annotated", FormsAnn),
+	% Intrument the AST to send the traces
 	InstForms = 
 		lists:map(
 			fun inst_anno_form/1,
 			FormsAnn),
-	?PVALUE("p", "Arbol instrumentado", InstForms),
-
+	% ?PVALUE("p", "Instumented", InstForms),
 	dbg_free_vars_server!exit,
 	Forms.
-		% ?PVALUE("p", "Arbol SyntaxTree", CreerSyntaxTree),
-	% %Etiqueta todos los nodos con nuestra etiqueta
-	% {NouveauSyntaxTreeEttiquete, Compte} = lists:mapfoldl(
-	% 										fun abreSyntaxTree/2,
-	% 										0,
-	% 										CreerSyntaxTree
-	% 									),
-	% 	% ?PVALUE("p", "Abre Nouveau SyntaxTree Etiquette", NouveauSyntaxTreeEttiquete),
-	% 	% ?PVALUE("p", "Abre Nouveau SyntaxTree Compte", Compte),
-
-	% %Cambia las etiquetas de forma que se ponen a true los nodos que se han de instrumentar
-	% NouveauSyntaxTree = lists:map(
-	% 								fun creerNouveauNoeud/1,
-	% 								NouveauSyntaxTreeEttiquete
-	% 							),
-	% 	?PVALUE("p", "Abre Nouveau SyntaxTree", NouveauSyntaxTree),
-	% 		% dbg_free_vars_server ! {freeVariable, self()},
-	% %Parse a AST desde SyntaxTree
-	% NouveauAST = erl_syntax:revert_forms(CreerSyntaxTree),
-	% 	% ?PVALUE("p", "Abre Nouveau AST ", NouveauAST),
-
-	% NouveauAST.
-
-% etiquettes(Noeud, Compte, Etat)->
-% 	case erl_syntax:get_ann(Noeud) of
-% 		[] -> 
-% 		% ?PVALUE("p", "Entro dentro", Noeud),
-% 			Noeud;
-% 		[#annotation{}]  -> 
-% 			[Etiquette]  = erl_syntax:get_ann(Noeud),
-% 				% ?PVALUE("p", "Entro dentro", Etiquette),
-% 			erl_syntax:set_ann(Noeud, [#annotation{
-% 											id = Etiquette#annotation.id, 
-% 											modify = Etat, 
-% 											%payload = State#annotation.payload,
-% 											bindings = Etiquette#annotation.bindings}]
-% 										);
-% 		[Env, Bound, Free] -> 
-% 			{EnvElement, EnvValeur} = Env, 
-% 			{BoundElement, BoundValeur} = Bound, 
-% 			{FreeElement, FreeValeur} = Free,
-
-% 				% ?PVALUE("p", "Entro en el otro", {erl_syntax:type(Noeud), Noeud}),
-% 			erl_syntax:set_ann(Noeud, [#annotation{
-% 											id = Compte, 
-% 											modify = Etat, 
-% 											%payload = erl_syntax:string(whatIS(erl_syntax:type(Noeud), Noeud)),
-% 											bindings = [
-% 												erl_syntax:tuple([erl_syntax:atom(EnvElement), erl_syntax:list([erl_syntax:string(X) || X <- EnvValeur])]),
-% 												erl_syntax:tuple([erl_syntax:atom(BoundElement), erl_syntax:list([erl_syntax:string(X) || X <- BoundValeur])]),
-% 												erl_syntax:tuple([erl_syntax:atom(FreeElement), erl_syntax:list([erl_syntax:string(X) || X <- FreeValeur])])
-% 											]}]
-% 										)
-% 	end.
-
-% 	whatIS(attribute, Noeud) ->
-% 		erl_pp:attribute(erl_syntax:revert(Noeud));
-
-% 	whatIS(function, Noeud) ->
-% 		erl_pp:function(erl_syntax:revert(Noeud));
-
-% 	whatIS(block_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(case_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(catch_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(cond_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(fun_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(if_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-		
-% 	whatIS(infix_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));	
-
-% 	whatIS(map_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(match_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(named_fun_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(receive_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(record_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(record_index_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(try_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(try_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% whatIS(Other, Noeud) ->
-% 	erl_pp:expr(erl_syntax:revert(Noeud)).
-
-% creerNouveauNoeud('eof_marker', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('attribute', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildName = case erl_syntax:attribute_name(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						Name ->
-% 							erl_syntax_lib:map(
-% 								fun (Lcl_Name) ->
-% 									[EtiquetteName] = erl_syntax:get_ann(Lcl_Name),
-% 									etiquettes(Lcl_Name, EtiquetteName#annotation.id, false)
-% 								end,
-% 								Name
-% 							)
-% 					end,
-
-% 	BuildArg = case erl_syntax:attribute_arguments(Noeud) of
-% 						'none' ->
-% 							none;
-% 						Arg ->
-% 							lists:map(
-% 								fun (Term) ->
-% 									[EtiquetteArg] = erl_syntax:get_ann(Term),
-% 									etiquettes(Term, EtiquetteArg#annotation.id, false)
-% 								end,
-% 								Arg
-% 							)
-% 					end,
-
-% 	BuildAttribute = erl_syntax:attribute(BuildName, BuildArg),
-% 	NewEtiquette = erl_syntax:set_ann(BuildAttribute, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);	
-
-% creerNouveauNoeud('function', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildName = case erl_syntax:function_name(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						Name ->
-% 							erl_syntax_lib:map(
-% 								fun (Name) ->
-% 									[EtiquetteName] = erl_syntax:get_ann(Name),
-% 									etiquettes(Name, EtiquetteName#annotation.id, false)
-% 								end,
-% 								Name
-% 							)
-% 					end,
-
-% 	BuildClauses = erl_syntax:function_clauses(Noeud),
-% 	BuildFunction = erl_syntax:function(BuildName, BuildClauses),
-% 	NewEtiquette = erl_syntax:set_ann(BuildFunction, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
-
-% creerNouveauNoeud('clause', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-
-% 	BuildGuard = case erl_syntax:clause_guard(Noeud) of
-% 					'none' ->
-% 						none;
-% 					Guard ->
-% 						erl_syntax_lib:map(
-% 							fun (Term) ->
-% 								[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 								etiquettes(Term, EtiquetteTerm, false)
-% 							end,
-% 							Guard
-% 						 )
-% 				end,
-
-% 	BuildPattern = lists:map(
-% 						fun (Term) ->
-% 							[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 							etiquettes(Term, EtiquetteTerm, false)
-% 						end,
-% 						erl_syntax:clause_patterns(Noeud)
-% 					),
-
-% 	BuildBody = erl_syntax:clause_body(Noeud),
-
-% 	NewBuildBody = create_ins_build_body(BuildBody),
-
-% 	BuildClause = erl_syntax:clause(BuildPattern, BuildGuard, NewBuildBody),	
-% 	NewEtiquette = erl_syntax:set_ann(BuildClause, [EtiquetteNoeud]),
-
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);	
-
-% creerNouveauNoeud('binary_generator', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildBinaryPattern = case erl_syntax:binary_generator_pattern(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						BinaryPattern ->
-% 							erl_syntax_lib:map(
-% 								fun (Term) ->
-% 									[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 									etiquettes(Term, EtiquetteTerm#annotation.id, false)
-% 								end,
-% 								BinaryPattern
-% 							)
-% 					end,
-
-% 	BuildBinaryBody = erl_syntax:binary_generator_body(Noeud),
-% 	BuildBinaryGenerator = erl_syntax:binary_generator(BuildBinaryPattern, BuildBinaryBody),
-% 	NewEtiquette = erl_syntax:set_ann(BuildBinaryGenerator, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
-
-% creerNouveauNoeud('generator', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildPattern = case erl_syntax:generator_pattern(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						Pattern ->
-% 							erl_syntax_lib:map(
-% 								fun (Term) ->
-% 									[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 									etiquettes(Term, EtiquetteTerm#annotation.id, false)
-% 								end,
-% 								Pattern
-% 							)
-% 					end,
-
-% 	BuildBody = erl_syntax:generator_body(Noeud),
-% 	BuildGenerator = erl_syntax:generator(BuildPattern, BuildBody),
-% 	NewEtiquette = erl_syntax:set_ann(BuildGenerator, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
-
-% creerNouveauNoeud('match_expr', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	NouveauNoeud = erl_syntax:match_expr(
-% 							erl_syntax:match_expr_pattern(Noeud), 
-% 							erl_syntax:match_expr_body(Noeud)
-% 						),
-% 	NewEtiquette = erl_syntax:set_ann(NouveauNoeud, [Etiquette]),
-% 	etiquettes(NewEtiquette, Etiquette#annotation.id, true);
-
-% creerNouveauNoeud('operator', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('variable', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('atom', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('char', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('integer', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('float', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud(Other, Noeud) ->
-% 	Noeud.
-
-% %%%%%%%%%%%Send Proces
-% buildSendProcess(Process, Msg) ->
-% 	erl_syntax:application(
-% 		erl_syntax:atom(erlang) , 
-% 		erl_syntax:atom(send), 
-% 			[
-% 				erl_syntax:atom(Process),
-% 		 		erl_syntax:tuple(Msg)
-% 		 	]
-% 		 ).
-
-% buildCaseError(Value) ->
-% 	% dbg_free_vars_server ! {newFreeVariable, self()},
-% 	NewVariable = freeVariable(),
-% 	erl_syntax:case_expr(
-% 		 Value,
-% 		[
-% 		  createClause(error, [Value, NewVariable]),
-% 		  createClause(throw, [Value, NewVariable]),
-% 		  createClause(exit,  [Value, NewVariable]),
-% 		  createClause(other, [Value, NewVariable])
-% 		]).
-
-% createClause(other, [Value, _]) ->
-% 	erl_syntax:clause(
-%   		[Value], 
-%   		none, 
-%   		[buildSendProcess(dbg_tracer, [
-%   				erl_syntax:atom(newValueTerm), 
-%   				Value]), Value]);
-
-% createClause(error, [Value, NewVariable]) ->
-% 	erl_syntax:clause([
-% 		erl_syntax:tuple([
-% 				erl_syntax:atom('ERROR'),  
-% 				NewVariable])],
-% 		none,
-% 		[buildSendProcess(dbg_tracer, [Value])
-% 		]);
-
-% createClause(throw, [Value, NewVariable]) ->	
-% 	erl_syntax:clause([
-% 		erl_syntax:tuple([
-% 				erl_syntax:atom('THROW'),  
-% 				NewVariable])],
-% 		none,
-% 		[buildSendProcess(dbg_tracer, [Value])
-% 		]);
-	
-% createClause(exit, [Value, NewVariable]) ->
-% 	erl_syntax:clause([
-% 		erl_syntax:tuple([
-% 				erl_syntax:atom('EXIT'), 
-% 				NewVariable])],
-% 		none,
-% 		[buildSendProcess(dbg_tracer, [Value])
-% 		]);
-	
-% createClause(Other, [_]) ->
-% 	erl_syntax:clause([
-% 		none,
-% 		none,
-% 		none]).
-% create_ins_build_body(BuildBody) ->
-% 	FinalClause = lists:last(BuildBody),
-% 	BodyOriSinUlt = lists:droplast(BuildBody),
-% 	% ?PVALUE("p", "Nose", func_catching_body_f1(BodyOriSinUlt)),	
-% 	% ?PVALUE("p", "Nose", func_catching_body_f2(FinalClause)),	
-% 	func_catching_body_f1(BodyOriSinUlt) ++ [func_catching_body_f2(FinalClause)].
-% func_send_begin(NameTracer , Type, Term, EtiquetteTerm) ->
-% 	buildSendProcess(NameTracer, [
-% 		erl_syntax:atom('newExpresion'),
-% 		erl_syntax:list([
-% 			erl_syntax:atom(Type),
-% 			erl_syntax:integer(EtiquetteTerm#annotation.id),
-% 			erl_syntax:string(EtiquetteTerm#annotation.payload),
-% 			erl_syntax:list(EtiquetteTerm#annotation.bindings),
-% 			erl_syntax:atom(erl_syntax:type(Term))
-% 		])
-% ]).
-
-% func_catching_body_f1(Body) ->
-% 	lists:map(
-% 				fun (Term) ->
-% 					[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 					case EtiquetteTerm#annotation.modify of 
-% 						true ->
-% 							NewFreeVariable = freeVariable(),
-% 							BlockExpr =	erl_syntax:block_expr([	
-% 												func_send_begin(dbg_tracer,'begin', Term, EtiquetteTerm),											
-% 												erl_syntax:match_expr(
-% 													NewFreeVariable, 
-% 													erl_syntax:catch_expr(Term)
-% 												),
-												
-% 												buildCaseError(NewFreeVariable),
-										
-% 												func_send_begin(dbg_tracer,'end', Term, EtiquetteTerm)
-% 										]),
-% 							BlockExpr;
-% 						false ->
-% 							Term;
-% 						Error ->
-% 							io:format("Error ni true ni false")
-% 					end
-% 				end,
-% 				Body
-% 			).
-
-% func_catching_body_f2(Term) ->
-% 					[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 					case EtiquetteTerm#annotation.modify of 
-% 						true ->
-% 							NewFreeVariable = freeVariable(),
-% 							BlockExpr =	erl_syntax:block_expr([	
-% 												func_send_begin(dbg_tracer,'begin', Term, EtiquetteTerm), 											
-												
-% 												erl_syntax:match_expr(
-% 													NewFreeVariable, 
-% 													erl_syntax:catch_expr(Term)
-% 												),
-												
-% 												buildCaseError(NewFreeVariable),
-										
-% 												func_send_begin(dbg_tracer,'end', Term, EtiquetteTerm),
-% 												Term
-% 										]),
-% 							BlockExpr;
-% 						false ->
-% 							Term;
-% 						Error ->
-% 							io:format("Error ni true ni false")
-% 					end.
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Annotate Bindings
@@ -983,3 +578,420 @@ build_block_exp_pattern([T,L], ListBlockExpPattern) ->
   build_list_pattern([T|L], List) ->
   	erl_syntax:clause_patterns(T) ++ List, 
   	build_list_pattern([L], List).
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Old Code
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+		% ?PVALUE("p", "Arbol SyntaxTree", CreerSyntaxTree),
+	% %Etiqueta todos los nodos con nuestra etiqueta
+	% {NouveauSyntaxTreeEttiquete, Compte} = lists:mapfoldl(
+	% 										fun abreSyntaxTree/2,
+	% 										0,
+	% 										CreerSyntaxTree
+	% 									),
+	% 	% ?PVALUE("p", "Abre Nouveau SyntaxTree Etiquette", NouveauSyntaxTreeEttiquete),
+	% 	% ?PVALUE("p", "Abre Nouveau SyntaxTree Compte", Compte),
+
+	% %Cambia las etiquetas de forma que se ponen a true los nodos que se han de instrumentar
+	% NouveauSyntaxTree = lists:map(
+	% 								fun creerNouveauNoeud/1,
+	% 								NouveauSyntaxTreeEttiquete
+	% 							),
+	% 	?PVALUE("p", "Abre Nouveau SyntaxTree", NouveauSyntaxTree),
+	% 		% dbg_free_vars_server ! {freeVariable, self()},
+	% %Parse a AST desde SyntaxTree
+	% NouveauAST = erl_syntax:revert_forms(CreerSyntaxTree),
+	% 	% ?PVALUE("p", "Abre Nouveau AST ", NouveauAST),
+
+	% NouveauAST.
+
+% etiquettes(Noeud, Compte, Etat)->
+% 	case erl_syntax:get_ann(Noeud) of
+% 		[] -> 
+% 		% ?PVALUE("p", "Entro dentro", Noeud),
+% 			Noeud;
+% 		[#annotation{}]  -> 
+% 			[Etiquette]  = erl_syntax:get_ann(Noeud),
+% 				% ?PVALUE("p", "Entro dentro", Etiquette),
+% 			erl_syntax:set_ann(Noeud, [#annotation{
+% 											id = Etiquette#annotation.id, 
+% 											modify = Etat, 
+% 											%payload = State#annotation.payload,
+% 											bindings = Etiquette#annotation.bindings}]
+% 										);
+% 		[Env, Bound, Free] -> 
+% 			{EnvElement, EnvValeur} = Env, 
+% 			{BoundElement, BoundValeur} = Bound, 
+% 			{FreeElement, FreeValeur} = Free,
+
+% 				% ?PVALUE("p", "Entro en el otro", {erl_syntax:type(Noeud), Noeud}),
+% 			erl_syntax:set_ann(Noeud, [#annotation{
+% 											id = Compte, 
+% 											modify = Etat, 
+% 											%payload = erl_syntax:string(whatIS(erl_syntax:type(Noeud), Noeud)),
+% 											bindings = [
+% 												erl_syntax:tuple([erl_syntax:atom(EnvElement), erl_syntax:list([erl_syntax:string(X) || X <- EnvValeur])]),
+% 												erl_syntax:tuple([erl_syntax:atom(BoundElement), erl_syntax:list([erl_syntax:string(X) || X <- BoundValeur])]),
+% 												erl_syntax:tuple([erl_syntax:atom(FreeElement), erl_syntax:list([erl_syntax:string(X) || X <- FreeValeur])])
+% 											]}]
+% 										)
+% 	end.
+
+% 	whatIS(attribute, Noeud) ->
+% 		erl_pp:attribute(erl_syntax:revert(Noeud));
+
+% 	whatIS(function, Noeud) ->
+% 		erl_pp:function(erl_syntax:revert(Noeud));
+
+% 	whatIS(block_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(case_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(catch_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(cond_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(fun_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(if_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+		
+% 	whatIS(infix_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));	
+
+% 	whatIS(map_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(match_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(named_fun_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(receive_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(record_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(record_index_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(try_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% 	whatIS(try_expr, Noeud) ->
+% 		erl_pp:expr(erl_syntax:revert(Noeud));
+
+% whatIS(Other, Noeud) ->
+% 	erl_pp:expr(erl_syntax:revert(Noeud)).
+
+% creerNouveauNoeud('eof_marker', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud('attribute', Noeud) ->
+% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
+% 	BuildName = case erl_syntax:attribute_name(Noeud) of
+% 						'none' ->
+% 							none;
+
+% 						Name ->
+% 							erl_syntax_lib:map(
+% 								fun (Lcl_Name) ->
+% 									[EtiquetteName] = erl_syntax:get_ann(Lcl_Name),
+% 									etiquettes(Lcl_Name, EtiquetteName#annotation.id, false)
+% 								end,
+% 								Name
+% 							)
+% 					end,
+
+% 	BuildArg = case erl_syntax:attribute_arguments(Noeud) of
+% 						'none' ->
+% 							none;
+% 						Arg ->
+% 							lists:map(
+% 								fun (Term) ->
+% 									[EtiquetteArg] = erl_syntax:get_ann(Term),
+% 									etiquettes(Term, EtiquetteArg#annotation.id, false)
+% 								end,
+% 								Arg
+% 							)
+% 					end,
+
+% 	BuildAttribute = erl_syntax:attribute(BuildName, BuildArg),
+% 	NewEtiquette = erl_syntax:set_ann(BuildAttribute, [EtiquetteNoeud]),
+% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);	
+
+% creerNouveauNoeud('function', Noeud) ->
+% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
+% 	BuildName = case erl_syntax:function_name(Noeud) of
+% 						'none' ->
+% 							none;
+
+% 						Name ->
+% 							erl_syntax_lib:map(
+% 								fun (Name) ->
+% 									[EtiquetteName] = erl_syntax:get_ann(Name),
+% 									etiquettes(Name, EtiquetteName#annotation.id, false)
+% 								end,
+% 								Name
+% 							)
+% 					end,
+
+% 	BuildClauses = erl_syntax:function_clauses(Noeud),
+% 	BuildFunction = erl_syntax:function(BuildName, BuildClauses),
+% 	NewEtiquette = erl_syntax:set_ann(BuildFunction, [EtiquetteNoeud]),
+% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
+
+% creerNouveauNoeud('clause', Noeud) ->
+% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
+
+% 	BuildGuard = case erl_syntax:clause_guard(Noeud) of
+% 					'none' ->
+% 						none;
+% 					Guard ->
+% 						erl_syntax_lib:map(
+% 							fun (Term) ->
+% 								[EtiquetteTerm] = erl_syntax:get_ann(Term),
+% 								etiquettes(Term, EtiquetteTerm, false)
+% 							end,
+% 							Guard
+% 						 )
+% 				end,
+
+% 	BuildPattern = lists:map(
+% 						fun (Term) ->
+% 							[EtiquetteTerm] = erl_syntax:get_ann(Term),
+% 							etiquettes(Term, EtiquetteTerm, false)
+% 						end,
+% 						erl_syntax:clause_patterns(Noeud)
+% 					),
+
+% 	BuildBody = erl_syntax:clause_body(Noeud),
+
+% 	NewBuildBody = create_ins_build_body(BuildBody),
+
+% 	BuildClause = erl_syntax:clause(BuildPattern, BuildGuard, NewBuildBody),	
+% 	NewEtiquette = erl_syntax:set_ann(BuildClause, [EtiquetteNoeud]),
+
+% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);	
+
+% creerNouveauNoeud('binary_generator', Noeud) ->
+% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
+% 	BuildBinaryPattern = case erl_syntax:binary_generator_pattern(Noeud) of
+% 						'none' ->
+% 							none;
+
+% 						BinaryPattern ->
+% 							erl_syntax_lib:map(
+% 								fun (Term) ->
+% 									[EtiquetteTerm] = erl_syntax:get_ann(Term),
+% 									etiquettes(Term, EtiquetteTerm#annotation.id, false)
+% 								end,
+% 								BinaryPattern
+% 							)
+% 					end,
+
+% 	BuildBinaryBody = erl_syntax:binary_generator_body(Noeud),
+% 	BuildBinaryGenerator = erl_syntax:binary_generator(BuildBinaryPattern, BuildBinaryBody),
+% 	NewEtiquette = erl_syntax:set_ann(BuildBinaryGenerator, [EtiquetteNoeud]),
+% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
+
+% creerNouveauNoeud('generator', Noeud) ->
+% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
+% 	BuildPattern = case erl_syntax:generator_pattern(Noeud) of
+% 						'none' ->
+% 							none;
+
+% 						Pattern ->
+% 							erl_syntax_lib:map(
+% 								fun (Term) ->
+% 									[EtiquetteTerm] = erl_syntax:get_ann(Term),
+% 									etiquettes(Term, EtiquetteTerm#annotation.id, false)
+% 								end,
+% 								Pattern
+% 							)
+% 					end,
+
+% 	BuildBody = erl_syntax:generator_body(Noeud),
+% 	BuildGenerator = erl_syntax:generator(BuildPattern, BuildBody),
+% 	NewEtiquette = erl_syntax:set_ann(BuildGenerator, [EtiquetteNoeud]),
+% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
+
+% creerNouveauNoeud('match_expr', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	NouveauNoeud = erl_syntax:match_expr(
+% 							erl_syntax:match_expr_pattern(Noeud), 
+% 							erl_syntax:match_expr_body(Noeud)
+% 						),
+% 	NewEtiquette = erl_syntax:set_ann(NouveauNoeud, [Etiquette]),
+% 	etiquettes(NewEtiquette, Etiquette#annotation.id, true);
+
+% creerNouveauNoeud('operator', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud('variable', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud('atom', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud('char', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud('integer', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud('float', Noeud) ->
+% 	[Etiquette] = erl_syntax:get_ann(Noeud),
+% 	etiquettes(Noeud, Etiquette#annotation.id, false);
+
+% creerNouveauNoeud(Other, Noeud) ->
+% 	Noeud.
+
+% %%%%%%%%%%%Send Proces
+% buildSendProcess(Process, Msg) ->
+% 	erl_syntax:application(
+% 		erl_syntax:atom(erlang) , 
+% 		erl_syntax:atom(send), 
+% 			[
+% 				erl_syntax:atom(Process),
+% 		 		erl_syntax:tuple(Msg)
+% 		 	]
+% 		 ).
+
+% buildCaseError(Value) ->
+% 	% dbg_free_vars_server ! {newFreeVariable, self()},
+% 	NewVariable = freeVariable(),
+% 	erl_syntax:case_expr(
+% 		 Value,
+% 		[
+% 		  createClause(error, [Value, NewVariable]),
+% 		  createClause(throw, [Value, NewVariable]),
+% 		  createClause(exit,  [Value, NewVariable]),
+% 		  createClause(other, [Value, NewVariable])
+% 		]).
+
+% createClause(other, [Value, _]) ->
+% 	erl_syntax:clause(
+%   		[Value], 
+%   		none, 
+%   		[buildSendProcess(dbg_tracer, [
+%   				erl_syntax:atom(newValueTerm), 
+%   				Value]), Value]);
+
+% createClause(error, [Value, NewVariable]) ->
+% 	erl_syntax:clause([
+% 		erl_syntax:tuple([
+% 				erl_syntax:atom('ERROR'),  
+% 				NewVariable])],
+% 		none,
+% 		[buildSendProcess(dbg_tracer, [Value])
+% 		]);
+
+% createClause(throw, [Value, NewVariable]) ->	
+% 	erl_syntax:clause([
+% 		erl_syntax:tuple([
+% 				erl_syntax:atom('THROW'),  
+% 				NewVariable])],
+% 		none,
+% 		[buildSendProcess(dbg_tracer, [Value])
+% 		]);
+	
+% createClause(exit, [Value, NewVariable]) ->
+% 	erl_syntax:clause([
+% 		erl_syntax:tuple([
+% 				erl_syntax:atom('EXIT'), 
+% 				NewVariable])],
+% 		none,
+% 		[buildSendProcess(dbg_tracer, [Value])
+% 		]);
+	
+% createClause(Other, [_]) ->
+% 	erl_syntax:clause([
+% 		none,
+% 		none,
+% 		none]).
+% create_ins_build_body(BuildBody) ->
+% 	FinalClause = lists:last(BuildBody),
+% 	BodyOriSinUlt = lists:droplast(BuildBody),
+% 	% ?PVALUE("p", "Nose", func_catching_body_f1(BodyOriSinUlt)),	
+% 	% ?PVALUE("p", "Nose", func_catching_body_f2(FinalClause)),	
+% 	func_catching_body_f1(BodyOriSinUlt) ++ [func_catching_body_f2(FinalClause)].
+% func_send_begin(NameTracer , Type, Term, EtiquetteTerm) ->
+% 	buildSendProcess(NameTracer, [
+% 		erl_syntax:atom('newExpresion'),
+% 		erl_syntax:list([
+% 			erl_syntax:atom(Type),
+% 			erl_syntax:integer(EtiquetteTerm#annotation.id),
+% 			erl_syntax:string(EtiquetteTerm#annotation.payload),
+% 			erl_syntax:list(EtiquetteTerm#annotation.bindings),
+% 			erl_syntax:atom(erl_syntax:type(Term))
+% 		])
+% ]).
+
+% func_catching_body_f1(Body) ->
+% 	lists:map(
+% 				fun (Term) ->
+% 					[EtiquetteTerm] = erl_syntax:get_ann(Term),
+% 					case EtiquetteTerm#annotation.modify of 
+% 						true ->
+% 							NewFreeVariable = freeVariable(),
+% 							BlockExpr =	erl_syntax:block_expr([	
+% 												func_send_begin(dbg_tracer,'begin', Term, EtiquetteTerm),											
+% 												erl_syntax:match_expr(
+% 													NewFreeVariable, 
+% 													erl_syntax:catch_expr(Term)
+% 												),
+												
+% 												buildCaseError(NewFreeVariable),
+										
+% 												func_send_begin(dbg_tracer,'end', Term, EtiquetteTerm)
+% 										]),
+% 							BlockExpr;
+% 						false ->
+% 							Term;
+% 						Error ->
+% 							io:format("Error ni true ni false")
+% 					end
+% 				end,
+% 				Body
+% 			).
+
+% func_catching_body_f2(Term) ->
+% 					[EtiquetteTerm] = erl_syntax:get_ann(Term),
+% 					case EtiquetteTerm#annotation.modify of 
+% 						true ->
+% 							NewFreeVariable = freeVariable(),
+% 							BlockExpr =	erl_syntax:block_expr([	
+% 												func_send_begin(dbg_tracer,'begin', Term, EtiquetteTerm), 											
+												
+% 												erl_syntax:match_expr(
+% 													NewFreeVariable, 
+% 													erl_syntax:catch_expr(Term)
+% 												),
+												
+% 												buildCaseError(NewFreeVariable),
+										
+% 												func_send_begin(dbg_tracer,'end', Term, EtiquetteTerm),
+% 												Term
+% 										]),
+% 							BlockExpr;
+% 						false ->
+% 							Term;
+% 						Error ->
+% 							io:format("Error ni true ni false")
+% 					end.
