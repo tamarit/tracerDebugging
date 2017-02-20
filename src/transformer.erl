@@ -76,7 +76,9 @@ parse_transform(Forms, _Options) ->
 			FormsAnn),
 	% ?PVALUE("p", "Instumented", InstForms),
 	dbg_free_vars_server!exit,
-	[erl_syntax:revert(IF) || IF <- InstForms],
+	NewForms = 
+		[erl_syntax:revert(IF) || IF <- InstForms],
+	[io:format(erl_prettypr:format(F) ++ "\n") || F <- NewForms],
 	io:format("Reached\n"),
 	Forms.
 
@@ -89,9 +91,6 @@ annotate_bindings_form(Form)->
 		erl_syntax:type(Form), 
 		Form).
 
-
-% annotate_bindings_form(eof_marker, Form)->
-% 	Form;
 annotate_bindings_form(_, Form)->
 	erl_syntax_lib:annotate_bindings(
 		Form,
@@ -131,7 +130,7 @@ annotate_node(Node0, CurrentNodeId) ->
 			modify = Modify,
 			bindings = Bindings
 		},
-	Node2 = 
+	Node1 = 
 		case lists:member(Type, expressions_with_patterns()) of 
 			true -> 
 				NodeDMP = 
@@ -139,6 +138,17 @@ annotate_node(Node0, CurrentNodeId) ->
 				erl_syntax:set_ann(NodeDMP, [Ann]);
 			false ->
 				erl_syntax:set_ann(Node0, [Ann])
+		end,
+	Node2 = 
+		case lists:member(
+				Type, 
+				expressions_where_instrumentation_is_disabled()) of 
+			true -> 
+				erl_syntax_lib:map_subtrees(
+					fun disable_modify_node/1,
+					Node1);
+			false ->
+				Node1
 		end,
 	{Node2, CurrentNodeId + 1}.
 
@@ -227,6 +237,7 @@ instrument_node(Node0) ->
 			false ->
 				Node1
 		end,
+	% Node2.
 	case Annotation#annotation.modify of
 		true ->
 			instrument_expression(Node2, Annotation);
@@ -244,9 +255,10 @@ instrument_expression(Term, Annotation) ->
 					erl_syntax:atom(begin_exp), 
 					erl_syntax:integer(Annotation#annotation.id),
 					erl_syntax:atom(erl_syntax:type(Term)), 
-					lists:map(
-						fun bindings_to_ast/1, 
-						Annotation#annotation.bindings)
+					erl_syntax:list(
+						lists:map(
+							fun bindings_to_ast/1, 
+							Annotation#annotation.bindings))
 				]),	
 			erl_syntax:match_expr(
 				FreeVariable, 
@@ -266,7 +278,7 @@ build_case_catch(VarValue) ->
 
 build_case_catch_clause(no_error, VarValue) ->
 	erl_syntax:clause(
-  		erl_syntax:underscore(), 
+  		[erl_syntax:underscore()], 
   		none, 
   		[
   			build_send(
@@ -277,14 +289,12 @@ build_case_catch_clause(no_error, VarValue) ->
   			VarValue
   		]);
 build_case_catch_clause(Other, VarValue) ->
-	NewVariable = 
-		get_free_variable(),
 	erl_syntax:clause(
-		erl_syntax:tuple(
+		[erl_syntax:tuple(
 			[
 				erl_syntax:atom(Other),  
-				NewVariable
-			]), 
+				erl_syntax:underscore()
+			])], 
   		none, 
   		[
   			build_send(
@@ -381,23 +391,19 @@ build_clause_begin(Clause, PreviousPatterns) ->
 build_clause_begin_previous_patterns_info(
 		CurrentPatterns, 
 		[PrevPatterns | Tail]) -> 
-	{TailTries, TailFailReasons} = 
-		build_clause_begin_previous_patterns_info(
-			CurrentPatterns, 
-			Tail),
 	FreeVar = 
 		get_free_variable(),
 	Try = 
 		erl_syntax:match_expr(
 			FreeVar,
 			erl_syntax:try_expr(
-				erl_syntax:case_expr(
-					CurrentPatterns,
+				[erl_syntax:case_expr(
+					erl_syntax:list(CurrentPatterns),
 					[erl_syntax:clause(
-						PrevPatterns,
+						[erl_syntax:list(PrevPatterns)],
 						none,
 						[erl_syntax:atom(guard)])]
-				),
+				)],
 				[erl_syntax:clause(
 					[erl_syntax:class_qualifier(
 						erl_syntax:underscore(),
@@ -407,6 +413,10 @@ build_clause_begin_previous_patterns_info(
 				)]
 			)
 		),
+	{TailTries, TailFailReasons} = 
+		build_clause_begin_previous_patterns_info(
+			CurrentPatterns, 
+			Tail),
 	{
 		[Try | TailTries], 
 		[FreeVar | TailFailReasons]
@@ -420,6 +430,9 @@ build_clause_begin_previous_patterns_info(_, []) ->
 
 expressions_with_patterns() ->
 	[clause, generator, match_expr, binary_generator].
+
+expressions_where_instrumentation_is_disabled() ->
+	not_annotated_types() -- [clause, function].
 
 annotated_types() ->
 	[
@@ -481,7 +494,8 @@ bindings_to_ast({Type, ListVars}) ->
 	erl_syntax:tuple(
 	[
 		erl_syntax:atom(Type),
-		lists:map(fun erl_syntax:atom/1, ListVars)
+		erl_syntax:list(
+			lists:map(fun erl_syntax:atom/1, ListVars))
 	]).
 
 build_send(Msg) ->
