@@ -76,6 +76,8 @@ parse_transform(Forms, _Options) ->
 			FormsAnn),
 	% ?PVALUE("p", "Instumented", InstForms),
 	dbg_free_vars_server!exit,
+	[erl_syntax:revert(IF) || IF <- InstForms],
+	io:format("Reached\n"),
 	Forms.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -243,7 +245,7 @@ instrument_expression(Term, Annotation) ->
 					erl_syntax:integer(Annotation#annotation.id),
 					erl_syntax:atom(erl_syntax:type(Term)), 
 					lists:map(
-						fun binding_to_ast/1, 
+						fun bindings_to_ast/1, 
 						Annotation#annotation.bindings)
 				]),	
 			erl_syntax:match_expr(
@@ -314,27 +316,23 @@ instrument_clause_body(Body) ->
 	BodyRemainder = 
 		lists:droplast(Body),
 		BodyRemainder 
-	++ 	[instrument_clause_body_last(BodyLast)],	
+	++ 	instrument_clause_body_last(BodyLast).	
 
-inst_clause_body_last(Exp) ->
+instrument_clause_body_last(Exp) ->
 	FreeVariable = 
 		get_free_variable(),
-	erl_syntax:block_expr(
-		[	
-			erl_syntax:match_expr(FreeVariable, Exp),
-			build_send(
-				[
-					erl_syntax:atom(end_clause), 
-					FreeVariable
-				]),	
-			FreeVariable
-		]).
-
+	[	
+		erl_syntax:match_expr(FreeVariable, Exp),
+		build_send(
+			[
+				erl_syntax:atom(end_clause), 
+				FreeVariable
+			]),	
+		FreeVariable
+	].
 
 	% [	case_expr, cond_expr, fun_expr, function, if_expr
 	% , 	named_fun_expr, receive_expr, try_expr].
-
-
 instrument_expression_with_clauses(Exp, function) ->
 	FunName = 
 		erl_syntax:function_name(Exp),
@@ -365,10 +363,10 @@ build_clause_begin(Clause, PreviousPatterns) ->
 			PreviousPatterns),
 	NBody = 
 			PreviousClausesTries
-		++ 	build_send([
+		++ 	[build_send([
 				erl_syntax:atom(begin_clause),
 				erl_syntax:list(PreviousClausesFailReasons)
-			])
+			])]
 		++ 	Body,
 	NewClause = 
 		erl_syntax:clause(
@@ -382,7 +380,7 @@ build_clause_begin(Clause, PreviousPatterns) ->
 
 build_clause_begin_previous_patterns_info(
 		CurrentPatterns, 
-		[{PrevPatterns, PrevGuard} | Tail]) -> 
+		[PrevPatterns | Tail]) -> 
 	{TailTries, TailFailReasons} = 
 		build_clause_begin_previous_patterns_info(
 			CurrentPatterns, 
@@ -409,11 +407,12 @@ build_clause_begin_previous_patterns_info(
 				)]
 			)
 		),
-	Try = 
 	{
 		[Try | TailTries], 
 		[FreeVar | TailFailReasons]
-	}.
+	};
+build_clause_begin_previous_patterns_info(_, []) -> 
+	{[], []}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Type classifications
