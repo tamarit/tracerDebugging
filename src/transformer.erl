@@ -67,11 +67,12 @@ parse_transform(Forms, _Options) ->
 			fun annotate_form/2,
 			0,
 			FormsAnnBindings),
+	dbg_free_vars_server!all_variables_added,
 	% ?PVALUE("p", "Annotated", FormsAnn),
 	% Intrument the AST to send the traces
 	InstForms = 
 		lists:map(
-			fun inst_anno_form/1,
+			fun instrument_form/1,
 			FormsAnn),
 	% ?PVALUE("p", "Instumented", InstForms),
 	dbg_free_vars_server!exit,
@@ -95,7 +96,7 @@ annotate_bindings_form(_, Form)->
 		ordsets:new()).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Complete Annotation
+% Full Annotation
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 annotate_form(Form, CurrentNodeId) ->
@@ -128,16 +129,14 @@ annotate_node(Node0, CurrentNodeId) ->
 			modify = Modify,
 			bindings = Bindings
 		},
-	Node1 = 
-		erl_syntax:set_ann(Node0, [Ann]),
 	Node2 = 
 		case lists:member(Type, expressions_with_patterns()) of 
 			true -> 
 				NodeDMP = 
-					disable_modify_in_patterns(Type, Node1),
+					disable_modify_in_patterns(Type, Node0),
 				erl_syntax:set_ann(NodeDMP, [Ann]);
 			false ->
-				Node1
+				erl_syntax:set_ann(Node0, [Ann])
 		end,
 	{Node2, CurrentNodeId + 1}.
 
@@ -187,15 +186,240 @@ disable_modify_node(Node) ->
 		[Ann] -> 
 			erl_syntax:set_ann(
 				Node,
-				[Ann#annotation{modify = false}]);
-		_ ->
-			io:format("Node without annotations: ~p\n", [Node]), 
-			Node
+				[Ann#annotation{modify = false}])%;
+		% _ ->
+		% 	io:format("Node without annotations: ~p\n", [Node]), 
+		% 	Node
 	end.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Instrumentation
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+instrument_form(Forms) ->
+	erl_syntax_lib:map(
+		fun instrument_node/1,
+		Forms
+	).
+
+instrument_node(Node0) ->
+	[Annotation] = 
+		erl_syntax:get_ann(Node0),
+	Type = 
+		erl_syntax:type(Node0),
+	Node1 = 
+		case Type of
+			clause -> 
+				NewClause = 
+					instrument_clause(Node0),
+				erl_syntax:set_ann(NewClause, Annotation);
+			_ ->
+				Node0
+		end,
+	Node2 = 
+		case lists:member(Type, expressions_with_clauses()) of
+			true ->
+				NewEWC = 
+					instrument_expression_with_clauses(Node1, Type),
+				erl_syntax:set_ann(NewEWC, Annotation);
+			false ->
+				Node1
+		end,
+	case Annotation#annotation.modify of
+		true ->
+			instrument_expression(Node2, Annotation);
+		false ->
+			Node2
+	end.
+
+instrument_expression(Term, Annotation) ->
+	FreeVariable = 
+		get_free_variable(),
+	erl_syntax:block_expr(
+		[	
+			build_send(
+				[
+					erl_syntax:atom(begin_exp), 
+					erl_syntax:integer(Annotation#annotation.id),
+					erl_syntax:atom(erl_syntax:type(Term)), 
+					lists:map(
+						fun binding_to_ast/1, 
+						Annotation#annotation.bindings)
+				]),	
+			erl_syntax:match_expr(
+				FreeVariable, 
+				erl_syntax:catch_expr(Term)),
+			build_case_catch(FreeVariable)
+		]).
+
+build_case_catch(VarValue) ->
+	erl_syntax:case_expr(
+		VarValue,
+		[ 
+			build_case_catch_clause('ERROR', VarValue),
+		  	build_case_catch_clause('THROW', VarValue),
+		  	build_case_catch_clause('EXIT',  VarValue),
+		  	build_case_catch_clause(no_error, VarValue)
+		]).
+
+build_case_catch_clause(no_error, VarValue) ->
+	erl_syntax:clause(
+  		erl_syntax:underscore(), 
+  		none, 
+  		[
+  			build_send(
+  				[
+  					erl_syntax:atom(end_exp), 
+  					VarValue
+  				]), 
+  			VarValue
+  		]);
+build_case_catch_clause(Other, VarValue) ->
+	NewVariable = 
+		get_free_variable(),
+	erl_syntax:clause(
+		erl_syntax:tuple(
+			[
+				erl_syntax:atom(Other),  
+				NewVariable
+			]), 
+  		none, 
+  		[
+  			build_send(
+  				[
+  					erl_syntax:atom(error_exp), 
+  					VarValue
+  				]),
+  			% Last line is to stop the computation when error is raised
+			erl_syntax:application(
+				erl_syntax:atom(erlang) , 
+				erl_syntax:atom(exit), 
+				[
+					erl_syntax:atom(error_in_computation)
+				]
+			)
+  		]).
+
+instrument_clause(Clause) ->
+	erl_syntax:clause(
+		erl_syntax:clause_patterns(Clause), 
+		erl_syntax:clause_guard(Clause), 
+		instrument_clause_body(
+			erl_syntax:clause_body(Clause))
+	).
+
+instrument_clause_body(Body) ->
+	BodyLast = 
+		lists:last(Body),
+	BodyRemainder = 
+		lists:droplast(Body),
+		BodyRemainder 
+	++ 	[instrument_clause_body_last(BodyLast)],	
+
+inst_clause_body_last(Exp) ->
+	FreeVariable = 
+		get_free_variable(),
+	erl_syntax:block_expr(
+		[	
+			erl_syntax:match_expr(FreeVariable, Exp),
+			build_send(
+				[
+					erl_syntax:atom(end_clause), 
+					FreeVariable
+				]),	
+			FreeVariable
+		]).
+
+
+	% [	case_expr, cond_expr, fun_expr, function, if_expr
+	% , 	named_fun_expr, receive_expr, try_expr].
+
+
+instrument_expression_with_clauses(Exp, function) ->
+	FunName = 
+		erl_syntax:function_name(Exp),
+	{FunClauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:function_clauses(Exp)),
+	erl_syntax:function(
+		FunName, 
+		FunClauses);
+instrument_expression_with_clauses(Exp, _) ->
+	Exp.
+
+
+build_clause_begin(Clause, PreviousPatterns) -> 
+	Annotation = 
+		erl_syntax:get_ann(Clause),
+	Patterns = 
+		erl_syntax:clause_patterns(Clause),
+	Guard = 
+		erl_syntax:clause_guard(Clause),
+	Body = 
+		erl_syntax:clause_body(Clause),
+	{PreviousClausesTries, PreviousClausesFailReasons} = 
+		build_clause_begin_previous_patterns_info(
+			Patterns, 
+			PreviousPatterns),
+	NBody = 
+			PreviousClausesTries
+		++ 	build_send([
+				erl_syntax:atom(begin_clause),
+				erl_syntax:list(PreviousClausesFailReasons)
+			])
+		++ 	Body,
+	NewClause = 
+		erl_syntax:clause(
+			Patterns,
+			Guard,
+			NBody),
+	{
+		erl_syntax:set_ann(NewClause, Annotation),
+		PreviousPatterns ++ [Patterns]
+	}.
+
+build_clause_begin_previous_patterns_info(
+		CurrentPatterns, 
+		[{PrevPatterns, PrevGuard} | Tail]) -> 
+	{TailTries, TailFailReasons} = 
+		build_clause_begin_previous_patterns_info(
+			CurrentPatterns, 
+			Tail),
+	FreeVar = 
+		get_free_variable(),
+	Try = 
+		erl_syntax:match_expr(
+			FreeVar,
+			erl_syntax:try_expr(
+				erl_syntax:case_expr(
+					CurrentPatterns,
+					[erl_syntax:clause(
+						PrevPatterns,
+						none,
+						[erl_syntax:atom(guard)])]
+				),
+				[erl_syntax:clause(
+					[erl_syntax:class_qualifier(
+						erl_syntax:underscore(),
+						erl_syntax:underscore() )],
+					none,
+					[erl_syntax:atom(pattern)]
+				)]
+			)
+		),
+	Try = 
+	{
+		[Try | TailTries], 
+		[FreeVar | TailFailReasons]
+	}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Type classifications
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 expressions_with_patterns() ->
-	% binary_generator should be also in this list, but it does not appear in the erl_syntax:type/1 listing
 	[clause, generator, match_expr, binary_generator].
 
 annotated_types() ->
@@ -229,6 +453,10 @@ not_annotated_types() ->
 		, 	user_type_application, variable, warning_marker
 	].
 
+expressions_with_clauses() ->
+	[	case_expr, cond_expr, fun_expr, function, if_expr
+	, 	named_fun_expr, receive_expr, try_expr].
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Other functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -236,13 +464,9 @@ not_annotated_types() ->
 % The dbg_tracer should not be on when instrumenting the code. 
 % Instead, it should be on when running the code (i.e. after instrumentation).
 unregister_servers() ->
-	% catch unregister(dbg_server),
-	% catch unregister(dbg_tracer),
 	catch unregister(dbg_free_vars_server).
 
 register_servers() ->
-	% register(dbg_server, spawn(dbg_server, init, [])),
-	% register(dbg_tracer, spawn(dbg_tracer, init, [])),
 	register(
 		dbg_free_vars_server, 
 		spawn(dbg_free_vars_server, init, [])).
@@ -254,744 +478,19 @@ get_free_variable() ->
 			erl_syntax:variable(Value)
 	end.
 
+bindings_to_ast({Type, ListVars}) -> 
+	erl_syntax:tuple(
+	[
+		erl_syntax:atom(Type),
+		lists:map(fun erl_syntax:atom/1, ListVars)
+	]).
 
-inst_anno_form(Forms) ->
-	erl_syntax_lib:map(
-					fun shuttle_inst_anno_form/1,
-					Forms
-				).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%		Fase instrumentacion	%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-shuttle_inst_anno_form(Form) ->
-	[Annotation] = 
-		erl_syntax:get_ann(Form),
-	
-	InstNodeCatchClauseNewBody = 
-		case erl_syntax:type(Form) of
-			'clause' -> 
-				inst_catching_last_term(Form);
-			_ ->
-				Form
-		end,
-
-	InstNodeCatchNewClause = 
-		case erl_syntax:type(Form) of
-			function ->
-				inst_pattern_clause(InstNodeCatchClauseNewBody);
-			_ ->
-				InstNodeCatchClauseNewBody
-		end,
-
-	InstNodeCatch = 
-		case Annotation#annotation.modify of
-			true ->
-				inst_catching_term(InstNodeCatchNewClause);
-			false ->
-				InstNodeCatchNewClause
-		end.
-
-%%Anotar cualquier termino
-inst_catching_term(Term) ->
-	[Annotation] = 
-		erl_syntax:get_ann(Term),
-	FreeVariable = 
-		get_free_variable(),
-	erl_syntax:block_expr([	
-		func_send_begin(
-			dbg_tracer,
-			'begin', 
-			Term, 
-			Annotation),	
-		erl_syntax:match_expr(
-			FreeVariable, 
-			erl_syntax:catch_expr(Term)),
-		build_case_error(FreeVariable),
-		func_send_begin(
-			dbg_tracer,
-			'end', 
-			Term, 
-			Annotation)]).
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%Anota el ultimo termino del clause
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-inst_clause_body(Node) ->
-	erl_syntax:set_ann(		
-		erl_syntax:clause(
-			erl_syntax:clause_patterns(Node), 
-			erl_syntax:clause_guard(Node), 
-			inst_catching_last_term(
-				erl_syntax:clause_body(Node))),
-			[erl_syntax:get_ann(Node)]).
-
-inst_catching_last_term(ClauseBody) ->
-	BodyLast = 
-		lists:last(ClauseBody),
-	
-	BodyRemainder = 
-		lists:droplast(ClauseBody),
-	
-	BodyRemainder ++ [
-		inst_clause_body_last(BodyRemainder)].
-
-inst_clause_body_last(Term) ->
-	[Annotation] = 
-		erl_syntax:get_ann(Term),
-	FreeVariable = 
-		get_free_variable(),
-	erl_syntax:block_expr([	
-		func_send_begin(
-			dbg_tracer,
-			'begin', 
-			Term, 
-			Annotation), 											
-												
-	erl_syntax:match_expr(
-		FreeVariable, 
-		erl_syntax:catch_expr(Term)),
-		build_case_error(FreeVariable),
-		func_send_begin(
-			dbg_tracer,
-			'begin-end', 
-			Term, 
-			Annotation),
-		Term]).
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%% Send MSG process
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-func_send_begin(Process , TypeMsg, Term, Annotation) ->
-	build_send_process(Process, [
-		erl_syntax:atom('newExpresion'),
-		erl_syntax:list([
-			erl_syntax:atom(TypeMsg),
-			erl_syntax:integer(Annotation#annotation.id),
-			% erl_syntax:string(Annotation#annotation.payload),
-			erl_syntax:list(Annotation#annotation.bindings),
-			erl_syntax:atom(erl_syntax:type(Term))])]).
-
-build_send_process(Process, Msg) ->
+build_send(Msg) ->
 	erl_syntax:application(
 		erl_syntax:atom(erlang) , 
 		erl_syntax:atom(send), 
-			[
-				erl_syntax:atom(Process),
-		 		erl_syntax:tuple(Msg)
-		 	]
-		 ).
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-build_case_error(Term) ->
-	% dbg_free_vars_server ! {newFreeVariable, self()},
-	FreeVariable = 
-		get_free_variable(),
-	erl_syntax:case_expr(
-		 Term,
-		[ build_error(error, [Term, FreeVariable]),
-		  build_error(throw, [Term, FreeVariable]),
-		  build_error(exit,  [Term, FreeVariable]),
-		  build_error(other, [Term, FreeVariable])]).
-
-
-build_error(other, [Value, _]) ->
-	erl_syntax:clause(
-  		[Value], 
-  		none, 
-  		[build_send_process(
-  			dbg_tracer, 
-  			[erl_syntax:atom(newValueTerm), 
-  			Value]), 
-  		Value]);
-
-build_error(error, [Value, NewVariable]) ->
-	erl_syntax:clause([
-		erl_syntax:tuple([
-			erl_syntax:atom('ERROR'),  
-			NewVariable])],
-		none,
-		[build_send_process(
-			dbg_tracer, 
-			[Value])]);
-
-build_error(throw, [Value, NewVariable]) ->	
-	erl_syntax:clause([
-		erl_syntax:tuple([
-			erl_syntax:atom('THROW'),  
-			NewVariable])],
-		none,
-		[build_send_process(
-			dbg_tracer, 
-			[Value])]);
-	
-build_error(exit, [Value, NewVariable]) ->
-	erl_syntax:clause([
-		erl_syntax:tuple([
-			erl_syntax:atom('EXIT'), 
-			NewVariable])],
-		none,
-		[build_send_process(
-			dbg_tracer, 
-			[Value])]);
-	
-build_error(Other, [_]) ->
-	erl_syntax:clause([
-		none,
-		none,
-		none]).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%Instrumentacion de los patrones%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-inst_pattern_clause(Function) ->
-	[Annotation] = 
-		erl_syntax:get_ann(Function),
-	BuildName = 
-		erl_syntax:function_name(Function),
-
-	Clauses = 
-		erl_syntax:function_clauses(Function),
-	
-	ListPatterns = 
-		inst_build_list_pattern(Clauses, []),
-
-	BuildClauses =
-		inst_pattern_clause_catch(Clauses, ListPatterns, []), 
-
-	BuildFunction = 
-		erl_syntax:function(
-			BuildName, 
-			BuildClauses),
-	
-	erl_syntax:set_ann(
-		BuildFunction, 
-		[Annotation]).
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%Crea la lista con todos los patrones que tienen las clauses %%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-inst_build_list_pattern([], List) ->
-	List;
-
-inst_build_list_pattern([T|L], List) ->
-	inst_build_list_pattern(
-		[L], 
-		erl_syntax:clause_patterns(T) ++ List).
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%Crea las nuevas clauses de la funcion con la instrumentacion%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-inst_pattern_clause_catch( [], ListPatterns, ListBuildClause) ->
-	ListBuildClause;
-
-inst_pattern_clause_catch( [T|L], ListPatterns, ListBuildClause) ->
-	Pattern = 
-		erl_syntax:clause_patterns(T),
-
-	ListOtherPattern =
-		lists:delete(
-			Pattern, 
-			ListPatterns),
-	
-	BlockCatch = 
-		build_block_exp_pattern(
-			lists:append(ListOtherPattern), 
-			[]),
-	
-	BuildClause = 
-		build_clause_block(
-			T, 
-			BlockCatch),
-
-	inst_pattern_clause_catch( 
-		[L], 
-		ListPatterns, 
-		[BuildClause] ++ ListBuildClause).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%Crea el nuevo nodo dada una clause %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-build_clause_block(Clause, BlockCatch) ->
-	[Annotation] = 
-		erl_syntax:get_ann(Clause),
-
-	BuildGuard = 
-		erl_syntax:clause_guard(Clause),
-
-	BuildPattern = 	
-		erl_syntax:clause_patterns(Clause),
-
-	Body = 
-		erl_syntax:clause_body(Clause),
-
-	BuildBody = BlockCatch ++ Body,
-
-	BuildClause = 
-		erl_syntax:clause(
-			BuildPattern, 
-			BuildGuard, 
-			BuildBody),
-
-	erl_syntax:set_ann(
-		BuildClause, 
-		[Annotation]).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%Genera el bock_exp de cada elemento de la lista de patrones%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-build_block_exp_pattern([], ListBlockExpPattern) ->
-	erl_syntax:block_expr([	
-		ListBlockExpPattern]);
-
-build_block_exp_pattern([T,L], ListBlockExpPattern) ->
-	[Annotation] = 
-		erl_syntax:get_ann(T),
-	
-	FreeVariable = 
-		get_free_variable(),
-	
-	BlockExpPattern =
-		erl_syntax:block_expr([	
-			func_send_begin(
-				dbg_tracer,
-				'begin_pattern', 
-				T, 
-				Annotation),	
-			erl_syntax:match_expr(
-				FreeVariable, 
-				erl_syntax:catch_expr(T)),
-			build_case_error(FreeVariable),
-			func_send_begin(
-				dbg_tracer,
-				'end_pattern', 
-				T, 
-				Annotation)]),
-
-	build_block_exp_pattern(
-		[L],  
-		[BlockExpPattern] ++ ListBlockExpPattern).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%Genera La lista de patrones para construir los  nuevos clauses
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-  build_list_pattern([], List) ->
-  	List;  
-  
-  build_list_pattern([T|L], List) ->
-  	erl_syntax:clause_patterns(T) ++ List, 
-  	build_list_pattern([L], List).
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Old Code
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-		% ?PVALUE("p", "Arbol SyntaxTree", CreerSyntaxTree),
-	% %Etiqueta todos los nodos con nuestra etiqueta
-	% {NouveauSyntaxTreeEttiquete, Compte} = lists:mapfoldl(
-	% 										fun abreSyntaxTree/2,
-	% 										0,
-	% 										CreerSyntaxTree
-	% 									),
-	% 	% ?PVALUE("p", "Abre Nouveau SyntaxTree Etiquette", NouveauSyntaxTreeEttiquete),
-	% 	% ?PVALUE("p", "Abre Nouveau SyntaxTree Compte", Compte),
-
-	% %Cambia las etiquetas de forma que se ponen a true los nodos que se han de instrumentar
-	% NouveauSyntaxTree = lists:map(
-	% 								fun creerNouveauNoeud/1,
-	% 								NouveauSyntaxTreeEttiquete
-	% 							),
-	% 	?PVALUE("p", "Abre Nouveau SyntaxTree", NouveauSyntaxTree),
-	% 		% dbg_free_vars_server ! {freeVariable, self()},
-	% %Parse a AST desde SyntaxTree
-	% NouveauAST = erl_syntax:revert_forms(CreerSyntaxTree),
-	% 	% ?PVALUE("p", "Abre Nouveau AST ", NouveauAST),
-
-	% NouveauAST.
-
-% etiquettes(Noeud, Compte, Etat)->
-% 	case erl_syntax:get_ann(Noeud) of
-% 		[] -> 
-% 		% ?PVALUE("p", "Entro dentro", Noeud),
-% 			Noeud;
-% 		[#annotation{}]  -> 
-% 			[Etiquette]  = erl_syntax:get_ann(Noeud),
-% 				% ?PVALUE("p", "Entro dentro", Etiquette),
-% 			erl_syntax:set_ann(Noeud, [#annotation{
-% 											id = Etiquette#annotation.id, 
-% 											modify = Etat, 
-% 											%payload = State#annotation.payload,
-% 											bindings = Etiquette#annotation.bindings}]
-% 										);
-% 		[Env, Bound, Free] -> 
-% 			{EnvElement, EnvValeur} = Env, 
-% 			{BoundElement, BoundValeur} = Bound, 
-% 			{FreeElement, FreeValeur} = Free,
-
-% 				% ?PVALUE("p", "Entro en el otro", {erl_syntax:type(Noeud), Noeud}),
-% 			erl_syntax:set_ann(Noeud, [#annotation{
-% 											id = Compte, 
-% 											modify = Etat, 
-% 											%payload = erl_syntax:string(whatIS(erl_syntax:type(Noeud), Noeud)),
-% 											bindings = [
-% 												erl_syntax:tuple([erl_syntax:atom(EnvElement), erl_syntax:list([erl_syntax:string(X) || X <- EnvValeur])]),
-% 												erl_syntax:tuple([erl_syntax:atom(BoundElement), erl_syntax:list([erl_syntax:string(X) || X <- BoundValeur])]),
-% 												erl_syntax:tuple([erl_syntax:atom(FreeElement), erl_syntax:list([erl_syntax:string(X) || X <- FreeValeur])])
-% 											]}]
-% 										)
-% 	end.
-
-% 	whatIS(attribute, Noeud) ->
-% 		erl_pp:attribute(erl_syntax:revert(Noeud));
-
-% 	whatIS(function, Noeud) ->
-% 		erl_pp:function(erl_syntax:revert(Noeud));
-
-% 	whatIS(block_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(case_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(catch_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(cond_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(fun_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(if_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-		
-% 	whatIS(infix_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));	
-
-% 	whatIS(map_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(match_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(named_fun_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(receive_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(record_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(record_index_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(try_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% 	whatIS(try_expr, Noeud) ->
-% 		erl_pp:expr(erl_syntax:revert(Noeud));
-
-% whatIS(Other, Noeud) ->
-% 	erl_pp:expr(erl_syntax:revert(Noeud)).
-
-% creerNouveauNoeud('eof_marker', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('attribute', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildName = case erl_syntax:attribute_name(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						Name ->
-% 							erl_syntax_lib:map(
-% 								fun (Lcl_Name) ->
-% 									[EtiquetteName] = erl_syntax:get_ann(Lcl_Name),
-% 									etiquettes(Lcl_Name, EtiquetteName#annotation.id, false)
-% 								end,
-% 								Name
-% 							)
-% 					end,
-
-% 	BuildArg = case erl_syntax:attribute_arguments(Noeud) of
-% 						'none' ->
-% 							none;
-% 						Arg ->
-% 							lists:map(
-% 								fun (Term) ->
-% 									[EtiquetteArg] = erl_syntax:get_ann(Term),
-% 									etiquettes(Term, EtiquetteArg#annotation.id, false)
-% 								end,
-% 								Arg
-% 							)
-% 					end,
-
-% 	BuildAttribute = erl_syntax:attribute(BuildName, BuildArg),
-% 	NewEtiquette = erl_syntax:set_ann(BuildAttribute, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);	
-
-% creerNouveauNoeud('function', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildName = case erl_syntax:function_name(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						Name ->
-% 							erl_syntax_lib:map(
-% 								fun (Name) ->
-% 									[EtiquetteName] = erl_syntax:get_ann(Name),
-% 									etiquettes(Name, EtiquetteName#annotation.id, false)
-% 								end,
-% 								Name
-% 							)
-% 					end,
-
-% 	BuildClauses = erl_syntax:function_clauses(Noeud),
-% 	BuildFunction = erl_syntax:function(BuildName, BuildClauses),
-% 	NewEtiquette = erl_syntax:set_ann(BuildFunction, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
-
-% creerNouveauNoeud('clause', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-
-% 	BuildGuard = case erl_syntax:clause_guard(Noeud) of
-% 					'none' ->
-% 						none;
-% 					Guard ->
-% 						erl_syntax_lib:map(
-% 							fun (Term) ->
-% 								[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 								etiquettes(Term, EtiquetteTerm, false)
-% 							end,
-% 							Guard
-% 						 )
-% 				end,
-
-% 	BuildPattern = lists:map(
-% 						fun (Term) ->
-% 							[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 							etiquettes(Term, EtiquetteTerm, false)
-% 						end,
-% 						erl_syntax:clause_patterns(Noeud)
-% 					),
-
-% 	BuildBody = erl_syntax:clause_body(Noeud),
-
-% 	NewBuildBody = create_ins_build_body(BuildBody),
-
-% 	BuildClause = erl_syntax:clause(BuildPattern, BuildGuard, NewBuildBody),	
-% 	NewEtiquette = erl_syntax:set_ann(BuildClause, [EtiquetteNoeud]),
-
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);	
-
-% creerNouveauNoeud('binary_generator', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildBinaryPattern = case erl_syntax:binary_generator_pattern(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						BinaryPattern ->
-% 							erl_syntax_lib:map(
-% 								fun (Term) ->
-% 									[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 									etiquettes(Term, EtiquetteTerm#annotation.id, false)
-% 								end,
-% 								BinaryPattern
-% 							)
-% 					end,
-
-% 	BuildBinaryBody = erl_syntax:binary_generator_body(Noeud),
-% 	BuildBinaryGenerator = erl_syntax:binary_generator(BuildBinaryPattern, BuildBinaryBody),
-% 	NewEtiquette = erl_syntax:set_ann(BuildBinaryGenerator, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
-
-% creerNouveauNoeud('generator', Noeud) ->
-% 	[EtiquetteNoeud] = erl_syntax:get_ann(Noeud),
-% 	BuildPattern = case erl_syntax:generator_pattern(Noeud) of
-% 						'none' ->
-% 							none;
-
-% 						Pattern ->
-% 							erl_syntax_lib:map(
-% 								fun (Term) ->
-% 									[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 									etiquettes(Term, EtiquetteTerm#annotation.id, false)
-% 								end,
-% 								Pattern
-% 							)
-% 					end,
-
-% 	BuildBody = erl_syntax:generator_body(Noeud),
-% 	BuildGenerator = erl_syntax:generator(BuildPattern, BuildBody),
-% 	NewEtiquette = erl_syntax:set_ann(BuildGenerator, [EtiquetteNoeud]),
-% 	etiquettes(NewEtiquette, EtiquetteNoeud#annotation.id, false);
-
-% creerNouveauNoeud('match_expr', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	NouveauNoeud = erl_syntax:match_expr(
-% 							erl_syntax:match_expr_pattern(Noeud), 
-% 							erl_syntax:match_expr_body(Noeud)
-% 						),
-% 	NewEtiquette = erl_syntax:set_ann(NouveauNoeud, [Etiquette]),
-% 	etiquettes(NewEtiquette, Etiquette#annotation.id, true);
-
-% creerNouveauNoeud('operator', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('variable', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('atom', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('char', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('integer', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud('float', Noeud) ->
-% 	[Etiquette] = erl_syntax:get_ann(Noeud),
-% 	etiquettes(Noeud, Etiquette#annotation.id, false);
-
-% creerNouveauNoeud(Other, Noeud) ->
-% 	Noeud.
-
-% %%%%%%%%%%%Send Proces
-% buildSendProcess(Process, Msg) ->
-% 	erl_syntax:application(
-% 		erl_syntax:atom(erlang) , 
-% 		erl_syntax:atom(send), 
-% 			[
-% 				erl_syntax:atom(Process),
-% 		 		erl_syntax:tuple(Msg)
-% 		 	]
-% 		 ).
-
-% buildCaseError(Value) ->
-% 	% dbg_free_vars_server ! {newFreeVariable, self()},
-% 	NewVariable = freeVariable(),
-% 	erl_syntax:case_expr(
-% 		 Value,
-% 		[
-% 		  createClause(error, [Value, NewVariable]),
-% 		  createClause(throw, [Value, NewVariable]),
-% 		  createClause(exit,  [Value, NewVariable]),
-% 		  createClause(other, [Value, NewVariable])
-% 		]).
-
-% createClause(other, [Value, _]) ->
-% 	erl_syntax:clause(
-%   		[Value], 
-%   		none, 
-%   		[buildSendProcess(dbg_tracer, [
-%   				erl_syntax:atom(newValueTerm), 
-%   				Value]), Value]);
-
-% createClause(error, [Value, NewVariable]) ->
-% 	erl_syntax:clause([
-% 		erl_syntax:tuple([
-% 				erl_syntax:atom('ERROR'),  
-% 				NewVariable])],
-% 		none,
-% 		[buildSendProcess(dbg_tracer, [Value])
-% 		]);
-
-% createClause(throw, [Value, NewVariable]) ->	
-% 	erl_syntax:clause([
-% 		erl_syntax:tuple([
-% 				erl_syntax:atom('THROW'),  
-% 				NewVariable])],
-% 		none,
-% 		[buildSendProcess(dbg_tracer, [Value])
-% 		]);
-	
-% createClause(exit, [Value, NewVariable]) ->
-% 	erl_syntax:clause([
-% 		erl_syntax:tuple([
-% 				erl_syntax:atom('EXIT'), 
-% 				NewVariable])],
-% 		none,
-% 		[buildSendProcess(dbg_tracer, [Value])
-% 		]);
-	
-% createClause(Other, [_]) ->
-% 	erl_syntax:clause([
-% 		none,
-% 		none,
-% 		none]).
-% create_ins_build_body(BuildBody) ->
-% 	FinalClause = lists:last(BuildBody),
-% 	BodyOriSinUlt = lists:droplast(BuildBody),
-% 	% ?PVALUE("p", "Nose", func_catching_body_f1(BodyOriSinUlt)),	
-% 	% ?PVALUE("p", "Nose", func_catching_body_f2(FinalClause)),	
-% 	func_catching_body_f1(BodyOriSinUlt) ++ [func_catching_body_f2(FinalClause)].
-% func_send_begin(NameTracer , Type, Term, EtiquetteTerm) ->
-% 	buildSendProcess(NameTracer, [
-% 		erl_syntax:atom('newExpresion'),
-% 		erl_syntax:list([
-% 			erl_syntax:atom(Type),
-% 			erl_syntax:integer(EtiquetteTerm#annotation.id),
-% 			erl_syntax:string(EtiquetteTerm#annotation.payload),
-% 			erl_syntax:list(EtiquetteTerm#annotation.bindings),
-% 			erl_syntax:atom(erl_syntax:type(Term))
-% 		])
-% ]).
-
-% func_catching_body_f1(Body) ->
-% 	lists:map(
-% 				fun (Term) ->
-% 					[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 					case EtiquetteTerm#annotation.modify of 
-% 						true ->
-% 							NewFreeVariable = freeVariable(),
-% 							BlockExpr =	erl_syntax:block_expr([	
-% 												func_send_begin(dbg_tracer,'begin', Term, EtiquetteTerm),											
-% 												erl_syntax:match_expr(
-% 													NewFreeVariable, 
-% 													erl_syntax:catch_expr(Term)
-% 												),
-												
-% 												buildCaseError(NewFreeVariable),
-										
-% 												func_send_begin(dbg_tracer,'end', Term, EtiquetteTerm)
-% 										]),
-% 							BlockExpr;
-% 						false ->
-% 							Term;
-% 						Error ->
-% 							io:format("Error ni true ni false")
-% 					end
-% 				end,
-% 				Body
-% 			).
-
-% func_catching_body_f2(Term) ->
-% 					[EtiquetteTerm] = erl_syntax:get_ann(Term),
-% 					case EtiquetteTerm#annotation.modify of 
-% 						true ->
-% 							NewFreeVariable = freeVariable(),
-% 							BlockExpr =	erl_syntax:block_expr([	
-% 												func_send_begin(dbg_tracer,'begin', Term, EtiquetteTerm), 											
-												
-% 												erl_syntax:match_expr(
-% 													NewFreeVariable, 
-% 													erl_syntax:catch_expr(Term)
-% 												),
-												
-% 												buildCaseError(NewFreeVariable),
-										
-% 												func_send_begin(dbg_tracer,'end', Term, EtiquetteTerm),
-% 												Term
-% 										]),
-% 							BlockExpr;
-% 						false ->
-% 							Term;
-% 						Error ->
-% 							io:format("Error ni true ni false")
-% 					end.
+		[
+			erl_syntax:atom(dbg_tracer),
+	 		erl_syntax:tuple(Msg)
+		]
+	).

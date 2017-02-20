@@ -51,7 +51,7 @@ loop(State) ->
 			FreeVariable = 
 					State#state.max_length_variable 
 				++ 	integer_to_list(CurrentId), 
-			Pid ! FreeVariable,
+			Pid ! erl_syntax:variable(FreeVariable),
 			loop(NewState);
 		Other ->
 			erlang:exit(
