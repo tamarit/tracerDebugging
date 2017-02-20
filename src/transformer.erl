@@ -526,20 +526,21 @@ annotate_node(Node0, CurrentNodeId) ->
 		erl_syntax:get_ann(Node0),
 	Modify = 
 		lists:member(Type, annotated_types()),
+	Ann = 
+		#annotation
+		{
+			id = CurrentNodeId,
+			modify = Modify,
+			bindings = Bindings
+		},
 	Node1 = 
-		erl_syntax:set_ann(
-			Node0, 
-			[#annotation
-				{
-					id = CurrentNodeId,
-					modify = Modify,
-					bindings = Bindings
-				}
-			]),
+		erl_syntax:set_ann(Node0, [Ann]),
 	Node2 = 
 		case lists:member(Type, expressions_with_patterns()) of 
 			true -> 
-				disable_modify_in_patterns(Type, Node1);
+				NodeDMP = 
+					disable_modify_in_patterns(Type, Node1),
+				erl_syntax:set_ann(NodeDMP, [Ann]);
 			false ->
 				Node1
 		end,
