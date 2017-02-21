@@ -122,7 +122,7 @@ annotate_node(Node0, CurrentNodeId) ->
 	Bindings = 
 		erl_syntax:get_ann(Node0),
 	Modify = 
-		lists:member(Type, annotated_types()),
+		lists:member(Type, instrumented_types()),
 	Ann = 
 		#annotation
 		{
@@ -142,7 +142,7 @@ annotate_node(Node0, CurrentNodeId) ->
 	Node2 = 
 		case lists:member(
 				Type, 
-				expressions_where_instrumentation_is_disabled()) of 
+				children_not_instrumented_types()) of 
 			true -> 
 				erl_syntax_lib:map_subtrees(
 					fun disable_modify_node/1,
@@ -248,6 +248,9 @@ instrument_node(Node0) ->
 instrument_expression(Term, Annotation) ->
 	FreeVariable = 
 		get_free_variable(),
+	VarsBound = 
+		build_bound_vars_array(
+			Annotation#annotation.bindings),
 	erl_syntax:block_expr(
 		[	
 			build_send(
@@ -263,20 +266,20 @@ instrument_expression(Term, Annotation) ->
 			erl_syntax:match_expr(
 				FreeVariable, 
 				erl_syntax:catch_expr(Term)),
-			build_case_catch(FreeVariable)
+			build_case_catch(FreeVariable, VarsBound)
 		]).
 
-build_case_catch(VarValue) ->
+build_case_catch(VarValue, VarsBound) ->
 	erl_syntax:case_expr(
 		VarValue,
 		[ 
-			build_case_catch_clause('ERROR', VarValue),
-		  	build_case_catch_clause('THROW', VarValue),
-		  	build_case_catch_clause('EXIT',  VarValue),
-		  	build_case_catch_clause(no_error, VarValue)
+			build_case_catch_clause('ERROR', VarValue, VarsBound),
+		  	build_case_catch_clause('THROW', VarValue, VarsBound),
+		  	build_case_catch_clause('EXIT',  VarValue, VarsBound),
+		  	build_case_catch_clause(no_error, VarValue, VarsBound)
 		]).
 
-build_case_catch_clause(no_error, VarValue) ->
+build_case_catch_clause(no_error, VarValue, VarsBound) ->
 	erl_syntax:clause(
   		[erl_syntax:underscore()], 
   		none, 
@@ -284,11 +287,12 @@ build_case_catch_clause(no_error, VarValue) ->
   			build_send(
   				[
   					erl_syntax:atom(end_exp), 
-  					VarValue
+  					VarValue,
+  					VarsBound
   				]), 
   			VarValue
   		]);
-build_case_catch_clause(Other, VarValue) ->
+build_case_catch_clause(Other, VarValue, _) ->
 	erl_syntax:clause(
 		[erl_syntax:tuple(
 			[
@@ -312,6 +316,14 @@ build_case_catch_clause(Other, VarValue) ->
 			)
   		]).
 
+build_bound_vars_array([{bound, Vars} | _]) ->
+	erl_syntax:list(
+		[erl_syntax:variable(V) || V <- Vars]);
+build_bound_vars_array([_ | Tail]) ->
+	build_bound_vars_array(Tail);
+build_bound_vars_array([]) ->
+	erl_syntax:list([]).
+
 instrument_clause(Clause) ->
 	erl_syntax:clause(
 		erl_syntax:clause_patterns(Clause), 
@@ -325,7 +337,7 @@ instrument_clause_body(Body) ->
 		lists:last(Body),
 	BodyRemainder = 
 		lists:droplast(Body),
-		BodyRemainder 
+	BodyRemainder
 	++ 	instrument_clause_body_last(BodyLast).	
 
 instrument_clause_body_last(Exp) ->
@@ -341,28 +353,106 @@ instrument_clause_body_last(Exp) ->
 		FreeVariable
 	].
 
-	% [	case_expr, cond_expr, fun_expr, function, if_expr
-	% , 	named_fun_expr, receive_expr, try_expr].
+instrument_expression_with_clauses(Exp, case_expr) ->
+	CaseArg = 
+		erl_syntax:case_expr_argument(Exp),
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:case_expr_clauses(Exp)),
+	erl_syntax:case_expr(
+		CaseArg, 
+		Clauses);
+instrument_expression_with_clauses(Exp, cond_expr) ->
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:cond_expr_clauses(Exp)),
+	erl_syntax:cond_expr(
+		Clauses);
+instrument_expression_with_clauses(Exp, fun_expr) ->
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:fun_expr_clauses(Exp)),
+	erl_syntax:fun_expr(
+		Clauses);
 instrument_expression_with_clauses(Exp, function) ->
 	FunName = 
 		erl_syntax:function_name(Exp),
-	{FunClauses, _} = 
+	{Clauses, _} = 
 		lists:mapfoldl(
 			fun build_clause_begin/2,
 			[],
 			erl_syntax:function_clauses(Exp)),
 	erl_syntax:function(
 		FunName, 
-		FunClauses);
-instrument_expression_with_clauses(Exp, _) ->
-	Exp.
+		Clauses);
+instrument_expression_with_clauses(Exp, if_expr) ->
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:if_expr_clauses(Exp)),
+	erl_syntax:if_expr(
+		Clauses);
+instrument_expression_with_clauses(Exp, named_fun_expr) ->
+	FunName = 
+		erl_syntax:named_fun_expr_name(Exp),
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:named_fun_expr_clauses(Exp)),
+	erl_syntax:named_fun_expr(
+		FunName,
+		Clauses);
+instrument_expression_with_clauses(Exp, receive_expr) ->
+	Action = 
+		erl_syntax:receive_expr_action(Exp),
+	Timeout = 
+		erl_syntax:receive_expr_timeout(Exp),
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:receive_expr_clauses(Exp)),
+	erl_syntax:receive_expr(
+		Clauses,
+		Timeout,
+		Action);
+instrument_expression_with_clauses(Exp, try_expr) ->
+	Body = 
+		erl_syntax:try_expr_body(Exp),
+	{Clauses, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:try_expr_clauses(Exp)),
+	{Handlers, _} = 
+		lists:mapfoldl(
+			fun build_clause_begin/2,
+			[],
+			erl_syntax:try_expr_handlers(Exp)),
+	After = 
+		erl_syntax:try_expr_after(Exp),
+	erl_syntax:try_expr(
+		Body,
+		Clauses,
+		Handlers,
+		After).
 
 
 build_clause_begin(Clause, PreviousPatterns) -> 
 	Annotation = 
 		erl_syntax:get_ann(Clause),
-	Patterns = 
+	Patterns0 = 
 		erl_syntax:clause_patterns(Clause),
+	Patterns = 
+		replace_underscores(Patterns0),
 	Guard = 
 		erl_syntax:clause_guard(Clause),
 	Body = 
@@ -375,7 +465,8 @@ build_clause_begin(Clause, PreviousPatterns) ->
 			PreviousClausesTries
 		++ 	[build_send([
 				erl_syntax:atom(begin_clause),
-				erl_syntax:list(PreviousClausesFailReasons)
+				erl_syntax:list(PreviousClausesFailReasons),
+				build_bound_vars_array(Annotation#annotation.bindings)
 			])]
 		++ 	Body,
 	NewClause = 
@@ -387,6 +478,7 @@ build_clause_begin(Clause, PreviousPatterns) ->
 		erl_syntax:set_ann(NewClause, Annotation),
 		PreviousPatterns ++ [Patterns]
 	}.
+
 
 build_clause_begin_previous_patterns_info(
 		CurrentPatterns, 
@@ -424,6 +516,22 @@ build_clause_begin_previous_patterns_info(
 build_clause_begin_previous_patterns_info(_, []) -> 
 	{[], []}.
 
+replace_underscores(Nodes) -> 
+	lists:map(
+		fun(Node) -> 
+			erl_syntax_lib:map(
+				fun(N) -> 
+					case erl_syntax:type(N) of 
+						underscore -> 
+							get_free_variable();
+						_ ->
+							N
+					end
+				end,
+				Node)
+		end,
+		Nodes).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Type classifications
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -431,10 +539,14 @@ build_clause_begin_previous_patterns_info(_, []) ->
 expressions_with_patterns() ->
 	[clause, generator, match_expr, binary_generator].
 
-expressions_where_instrumentation_is_disabled() ->
-	not_annotated_types() -- [clause, function].
+expressions_with_clauses() ->
+	[	case_expr, cond_expr, fun_expr, function, if_expr
+	, 	named_fun_expr, receive_expr, try_expr].
 
-annotated_types() ->
+children_not_instrumented_types() ->
+	not_instrumented_types() -- [clause, function].
+
+instrumented_types() ->
 	[
 			application, binary, block_expr
 		, 	case_expr, catch_expr, fun_expr
@@ -444,7 +556,7 @@ annotated_types() ->
 		, 	record_expr, try_expr, tuple
 	].
 
-not_annotated_types() ->
+not_instrumented_types() ->
 	[
 			annotated_type, arity_qualifier, atom
 		, 	attribute, binary_field, binary_generator
@@ -464,10 +576,6 @@ not_annotated_types() ->
 		, 	type_application, type_union, underscore
 		, 	user_type_application, variable, warning_marker
 	].
-
-expressions_with_clauses() ->
-	[	case_expr, cond_expr, fun_expr, function, if_expr
-	, 	named_fun_expr, receive_expr, try_expr].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Other functions
