@@ -15,7 +15,7 @@ f(A) ->
 	end.
 
 g(A, B) ->
-	case (A / B) of 
+	case (A / (B + 1)) of 
 		A -> 
 			B * A;
 		_ -> 

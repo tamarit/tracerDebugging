@@ -79,8 +79,8 @@ parse_transform(Forms, _Options) ->
 	NewForms = 
 		[erl_syntax:revert(IF) || IF <- InstForms],
 	[io:format(erl_prettypr:format(F) ++ "\n") || F <- NewForms],
-	io:format("Reached\n"),
-	Forms.
+	NewForms.
+	% Forms.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Annotate Bindings
@@ -249,50 +249,164 @@ instrument_expression(Term, Annotation) ->
 	FreeVariable = 
 		get_free_variable(),
 	VarsBound = 
-		build_bound_vars_array(
-			Annotation#annotation.bindings),
+		lists:flatten(
+			[ 	Vars 
+			|| 	{bound, Vars} <- Annotation#annotation.bindings]),
+	% DictBoundVars = 
+	% 	erl_syntax:list(
+	% 		lists:map(
+	% 			fun(V) -> 
+	% 				erl_syntax:tuple([
+	% 					erl_syntax:atom(V),
+	% 					erl_syntax:variable(V)])
+	% 			end,
+	% 			VarsBound)
+	% 		),
+	VarsPatternCase = 
+		erl_syntax:list(
+			lists:map(
+				fun(_) -> 
+					get_free_variable()
+				end,
+				VarsBound)
+			),
+	VarsMatch = 
+		erl_syntax:list(
+			lists:map(
+				fun(_) -> 
+					get_free_variable()
+				end,
+				VarsBound)
+			),
+	VarValue = 
+		get_free_variable(),
+	WholePatternMatch = 
+		erl_syntax:tuple([
+			VarValue,
+			VarsMatch
+			]),
+	% ValuesList = 
+	% 	erl_syntax:list(
+	% 		lists:map(
+	% 			fun(V) -> 
+	% 				erl_syntax:variable(V)
+	% 			end,
+	% 			VarsBound)
+	% 		),
+	MatchExprs = 
+		lists:map(
+			fun({V, FV}) -> 
+				erl_syntax:match_expr(
+					erl_syntax:variable(V),
+					FV)
+			end,
+			lists:zip(VarsBound, erl_syntax:list_elements(VarsMatch))
+		),
+	InternalVar = 
+		get_free_variable(),
+	VarsSubsTerm = 
+		lists:map(
+			fun(_) -> 
+				get_free_variable()
+			end,
+			VarsBound),
+	DictSubs = 
+		lists:zip(VarsBound, VarsSubsTerm),
+	TermWithFV = 
+		lists:foldl(
+			fun({VarName, FV}, CTerm) -> 
+				erl_syntax_lib:map(
+					fun(N) ->
+						case erl_syntax:type(N) of 
+							variable -> 
+								case erl_syntax:variable_name(N) of 
+									VarName -> 
+										FV;
+									_ ->
+										N
+								end;
+							_ -> 
+								N
+						end
+					end,
+					CTerm)
+			end,
+			Term,
+			DictSubs),
 	erl_syntax:block_expr(
 		[	
 			build_send(
 				[
 					erl_syntax:atom(begin_exp), 
 					erl_syntax:integer(Annotation#annotation.id),
-					erl_syntax:atom(erl_syntax:type(Term)), 
-					erl_syntax:list(
-						lists:map(
-							fun bindings_to_ast/1, 
-							Annotation#annotation.bindings))
+					erl_syntax:atom(erl_syntax:type(Term))
 				]),	
+			% TODO: COuld be simplified. For instance the matching of vars could be done in a single expression, i.e. [OriVar1, .., OriVar2] = [AuxVar1, .., AuxVar2]
 			erl_syntax:match_expr(
-				FreeVariable, 
-				erl_syntax:catch_expr(Term)),
-			build_case_catch(FreeVariable, VarsBound)
-		]).
+				FreeVariable,
+				erl_syntax:catch_expr(
+					erl_syntax:block_expr([
+							erl_syntax:match_expr(
+								InternalVar,
+								TermWithFV),
+							erl_syntax:tuple([
+								InternalVar,
+								erl_syntax:list(VarsSubsTerm)])
+						])
+					)
+				),
+			build_case_catch(FreeVariable, VarsPatternCase, WholePatternMatch, VarsBound)
+		] 
+		++ 
+		MatchExprs 
+		++
+		[VarValue]).
 
-build_case_catch(VarValue, VarsBound) ->
-	erl_syntax:case_expr(
-		VarValue,
-		[ 
-			build_case_catch_clause('ERROR', VarValue, VarsBound),
-		  	build_case_catch_clause('THROW', VarValue, VarsBound),
-		  	build_case_catch_clause('EXIT',  VarValue, VarsBound),
-		  	build_case_catch_clause(no_error, VarValue, VarsBound)
-		]).
+build_case_catch(VarValueAndBinds, VarsPatternCase, WholePatternMatch, VarsBound) ->
+	erl_syntax:match_expr(
+		WholePatternMatch,
+		erl_syntax:case_expr(
+			VarValueAndBinds,
+			[ 
+				build_case_catch_clause(
+					'ERROR', VarValueAndBinds, VarsBound, VarsPatternCase),
+			  	build_case_catch_clause(
+			  		'THROW', VarValueAndBinds, VarsBound, VarsPatternCase),
+			  	build_case_catch_clause(
+			  		'EXIT',  VarValueAndBinds, VarsBound, VarsPatternCase),
+			  	build_case_catch_clause(
+			  		no_error, VarValueAndBinds, VarsBound, VarsPatternCase)
+			])
+		).
 
-build_case_catch_clause(no_error, VarValue, VarsBound) ->
+build_case_catch_clause(no_error, _, VarsBound, VarsPatternCase) ->
+	FreeVariable = 
+		get_free_variable(),
 	erl_syntax:clause(
-  		[erl_syntax:underscore()], 
+  		[erl_syntax:tuple(
+			[
+				FreeVariable,
+				VarsPatternCase
+			])], 
   		none, 
   		[
   			build_send(
   				[
   					erl_syntax:atom(end_exp), 
-  					VarValue,
-  					VarsBound
+  					FreeVariable,
+  					erl_syntax:list(
+  						lists:map(
+  							fun erl_syntax:atom/1,
+  							VarsBound)),
+  					VarsPatternCase
   				]), 
-  			VarValue
+  			erl_syntax:tuple(
+			[
+				FreeVariable,
+				VarsPatternCase
+			])
   		]);
-build_case_catch_clause(Other, VarValue, _) ->
+build_case_catch_clause(Other, VarValue, _, _) ->
 	erl_syntax:clause(
 		[erl_syntax:tuple(
 			[
@@ -316,13 +430,40 @@ build_case_catch_clause(Other, VarValue, _) ->
 			)
   		]).
 
-build_bound_vars_array([{bound, Vars} | _]) ->
+% build_bound_vars_array([{bound, Vars} | _]) ->
+% 	erl_syntax:list(
+% 		[erl_syntax:tuple([
+% 			erl_syntax:atom(V),
+% 			erl_syntax:variable(V)]) || V <- Vars]);
+% build_bound_vars_array([_ | Tail]) ->
+% 	build_bound_vars_array(Tail);
+% build_bound_vars_array([]) ->
+% 	erl_syntax:list([]).
+
+get_vars_from_list([N | T], S) -> 
+	NS = 
+		erl_syntax_lib:fold(
+			fun(CN, CS) -> 
+				case erl_syntax:type(CN) of 
+					variable ->
+						sets:add_element(
+							erl_syntax:variable_name(CN),
+							CS);
+					_ -> 
+						CS
+				end
+			end,
+			S,
+			N),
+	get_vars_from_list(T, NS);
+get_vars_from_list([], S) -> 
 	erl_syntax:list(
-		[erl_syntax:variable(V) || V <- Vars]);
-build_bound_vars_array([_ | Tail]) ->
-	build_bound_vars_array(Tail);
-build_bound_vars_array([]) ->
-	erl_syntax:list([]).
+		[erl_syntax:tuple([
+			erl_syntax:atom(V),
+			erl_syntax:variable(V)]) 
+		 || V <- sets:to_list(S)]).
+
+
 
 instrument_clause(Clause) ->
 	erl_syntax:clause(
@@ -466,7 +607,7 @@ build_clause_begin(Clause, PreviousPatterns) ->
 		++ 	[build_send([
 				erl_syntax:atom(begin_clause),
 				erl_syntax:list(PreviousClausesFailReasons),
-				build_bound_vars_array(Annotation#annotation.bindings)
+				get_vars_from_list(Patterns0, sets:new())
 			])]
 		++ 	Body,
 	NewClause = 
@@ -581,8 +722,6 @@ not_instrumented_types() ->
 % Other functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% The dbg_tracer should not be on when instrumenting the code. 
-% Instead, it should be on when running the code (i.e. after instrumentation).
 unregister_servers() ->
 	catch unregister(dbg_free_vars_server).
 
@@ -598,13 +737,13 @@ get_free_variable() ->
 			erl_syntax:variable(Value)
 	end.
 
-bindings_to_ast({Type, ListVars}) -> 
-	erl_syntax:tuple(
-	[
-		erl_syntax:atom(Type),
-		erl_syntax:list(
-			lists:map(fun erl_syntax:atom/1, ListVars))
-	]).
+% bindings_to_ast({Type, ListVars}) -> 
+% 	erl_syntax:tuple(
+% 	[
+% 		erl_syntax:atom(Type),
+% 		erl_syntax:list(
+% 			lists:map(fun erl_syntax:atom/1, ListVars))
+% 	]).
 
 build_send(Msg) ->
 	erl_syntax:application(
