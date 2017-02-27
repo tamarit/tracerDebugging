@@ -45,116 +45,164 @@
 	state, 
 	{	
 		id = 0, 
-		pila = [],  
-		bd = undefined,  
-		openData = undefined
+		stack_exp_clauses = [],  
+		stack_calls = [],  
+		environment = [],
+		bd = undefined%,  
+		% openData = undefined
 	}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % records definitions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 init()->
-	State = #state{	id = 0, pila = [], bd = undefine, openData = undefine},
-	%dets:open_file("bd.file",[])},
-	% %%Debug
-	% 	{ok, Refbegin} = State#state.bd,
-	% %%%
+	{ok, Df} = 
+		dets:open_file(traces, [{type, set}]),
+	State = 
+		#state{bd = Df},
 	loop(State).
 
-map(F, [H|T]) -> [F(H)|map(F, T)];
-map(F, [])    -> [].
-
-
-add_element_store(Type, [], Id, IdBegin) ->
-Id;
-
-add_element_store(Type, [T|L], Id, IdBegin) ->
-	case dict:is_key(T, Id) of
-		false ->
-			add_element_store(Type, L, dict:store(T, IdBegin, Id), IdBegin);
-		true ->
-			add_element_store(Type, L, Id, IdBegin)
-	end.
-
-loop(State) ->
+loop(State = #state{
+		id = Id, 
+		stack_exp_clauses = StackEC,
+		environment = Env}) ->
 	receive
-		{exit, Pid} ->
-			dets:close(State#state.bd),
-			io:format("Menssage: Pid(~p) decided finalize the execution.~n~n",[Pid]),
-			erlang:exit(
-				self(), 
-				{
-					error, 
-					{"Title: Exit.~n", Pid}});
-
-
-		{newExpresion, Term} ->
-			[TypeMsg, IdAst, PP, Bindings, TypeNode] = Term,
-			case lists:member(TypeMsg, save_msg()) of 
-				true ->
-					{ok, Df} = 
-						dets:open_file("bd.file",[]),
-					
-					dets:insert(
-						Df, 
-						{State#state.id + 1, {Term}}),
-					
-					dets:close(Df),
-					% Open = 
-					% 	case is_Open(TypeMsg) of
-					% 		'not' ->;
-					% 		'begin' ->;
-					% 		'begin_pattern' ->;
-					% 	end,
-					NewState = 
-						State#state{
-							id = State#state.id + 1, 
-							pila = State#state.pila ++ [{State#state.id + 1, {Term}}],
-							openData = State#state.openData ++ [TypeMsg]},
-					
-					loop(NewState);
-				false ->
-					?PVALUE("p", "Existe un error en el tipo de mensaje", {State#state.id})
+		exit ->
+			io:format("Sale\n"),
+			io:format("Final Stack: ~w\n", [StackEC]),
+			io:format("Final Environment: ~p\n", [Env]),
+			dets:traverse(
+				traces,
+				fun(X) -> 
+					io:format("~p\n", [X]), 
+					continue 
+				end),
+			case StackEC of 
+				[] -> 
+					io:format("The execution finished succefully.\n");
+				_ -> 
+					io:format("An error occurred while executing the following expressions.\n"),
+					[begin 
+						[{N, {begin_exp, ASTId, Type, Pos, PP}}] = 
+							dets:lookup(traces, N),
+						io:format("~s\n\tin line ~p\n", [PP, Pos])
+					end || N <- StackEC]
 			end,
-			loop(State);
-
-		{dropPila} ->
-			loop(
+			dets:close(traces),
+			file:delete("traces"),
+			ok;
+		T = {begin_exp, ASTId, Type, Pos, PP} ->
+			io:format("Entra trace BEGIN ~p\n", [Id]),
+			% Store partial trace info in the dets
+			dets:insert(traces, {Id, T}),
+			% Stack the expression 
+			NStackEC = 
+				[Id | StackEC],
+			% New trace id
+			NId = 
+				Id + 1,
+			% Si es llamada guardar en pila de llamadas y crear nuevo contexto de vars
+			NState = 
 				State#state{
-					pila = 
-						[]});
-
-		{dropBD} ->
-			loop(
+					id = NId,
+					stack_exp_clauses = NStackEC
+				},
+			loop(NState);
+		T = {end_exp, Value, BoundedVarsNames, BoundedVarsValues} -> 
+			io:format("Entra trace END\n"),
+			DictBindings = 
+				lists:zip(BoundedVarsNames, BoundedVarsValues),
+			% Unstack trace id
+			NStackEC = 
+				tl(StackEC),
+			% Complete the trace info on the dets
+			[{TraceId, {begin_exp, ASTId, Type, Pos, PP}}] = 
+				dets:lookup(traces, hd(StackEC)),
+			dets:insert(traces, {TraceId, {ASTId, Type, Pos, PP, Value, DictBindings, NStackEC}}),
+			% Store bindings in the environment table
+			NEnv = 
+					[{Var, {TraceId, VarValue}} || {Var, VarValue} <- DictBindings] 
+				++ 	Env,
+			% si es una llamada desapilar de pila de llamadas
+			% Si es funcion anonima o named func guardar el contexto actual
+			NState = 
 				State#state{
-					pila = 
-					[]});
-
-		{showBD, Pid} ->
-			{ok, Df} = State#state.bd,
-			?PVALUE("p", "Contenido de la base de datos", dets:match(Df, '$1')),
-			% Pid ! {data, dets:match(Df, '$1')},
+					stack_exp_clauses = NStackEC,
+					environment = NEnv
+				},			
+			loop(NState);
+		T = {begin_clause, PrevClausesFailReason, BoundedVars} ->
+			io:format("Entra trace BEGIN CLAUSE\n"),
+			% apilar 
+			% guardar en BD
+			% guardar bindings en tabla de variables
 			loop(State);
-
-		{showPila, Pid} ->
-			?PVALUE("p", "Contenido de la pila", State#state.pila),
-			% Pid ! {data, State#state.pila},
-			loop(State);
-
-		Other ->
-			% dets:close(
-			% 	State#state.bd),
-
-			erlang:exit(
-				self(), 
-				{
-					error, 
-					{"Title: Error option.~n", Other}})
-
-	after
-		30000  ->
+		T = {end_clause, _} ->
+			io:format("Entra trace END CLAUSE\n"),
 			loop(State)
+		% {newExpresion, Term} ->
+		% 	[TypeMsg, IdAst, PP, Bindings, TypeNode] = Term,
+		% 	case lists:member(TypeMsg, save_msg()) of 
+		% 		true ->
+		% 			{ok, Df} = 
+		% 				dets:open_file("bd.file",[]),
+					
+		% 			dets:insert(
+		% 				Df, 
+		% 				{State#state.id + 1, {Term}}),
+					
+		% 			dets:close(Df),
+		% 			% Open = 
+		% 			% 	case is_Open(TypeMsg) of
+		% 			% 		'not' ->;
+		% 			% 		'begin' ->;
+		% 			% 		'begin_pattern' ->;
+		% 			% 	end,
+		% 			NewState = 
+		% 				State#state{
+		% 					id = State#state.id + 1, 
+		% 					pila = State#state.pila ++ [{State#state.id + 1, {Term}}],
+		% 					openData = State#state.openData ++ [TypeMsg]},
+					
+		% 			loop(NewState);
+		% 		false ->
+		% 			?PVALUE("p", "Existe un error en el tipo de mensaje", {State#state.id})
+		% 	end,
+		% 	loop(State);
 
+		% {dropPila} ->
+		% 	loop(
+		% 		State#state{
+		% 			pila = 
+		% 				[]});
+
+		% {dropBD} ->
+		% 	loop(
+		% 		State#state{
+		% 			pila = 
+		% 			[]});
+
+		% {showBD, Pid} ->
+		% 	{ok, Df} = State#state.bd,
+		% 	?PVALUE("p", "Contenido de la base de datos", dets:match(Df, '$1')),
+		% 	% Pid ! {data, dets:match(Df, '$1')},
+		% 	loop(State);
+
+		% {showPila, Pid} ->
+		% 	?PVALUE("p", "Contenido de la pila", State#state.pila),
+		% 	% Pid ! {data, State#state.pila},
+		% 	loop(State);
+
+		% Other ->
+		% 	% dets:close(
+		% 	% 	State#state.bd),
+
+		% 	erlang:exit(
+		% 		self(), 
+		% 		{
+		% 			error, 
+		% 			{"Title: Error option.~n", Other}})
 	end.
 
 save_msg() ->

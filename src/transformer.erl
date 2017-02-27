@@ -68,6 +68,7 @@ parse_transform(Forms, _Options) ->
 			0,
 			FormsAnnBindings),
 	dbg_free_vars_server!all_variables_added,
+	dbg_ast_pp_server!{store_ast, FormsAnn},
 	% ?PVALUE("p", "Annotated", FormsAnn),
 	% Intrument the AST to send the traces
 	InstForms = 
@@ -78,7 +79,7 @@ parse_transform(Forms, _Options) ->
 	dbg_free_vars_server!exit,
 	NewForms = 
 		[erl_syntax:revert(IF) || IF <- InstForms],
-	[io:format(erl_prettypr:format(F) ++ "\n") || F <- NewForms],
+	% [io:format(erl_prettypr:format(F) ++ "\n") || F <- NewForms],
 	NewForms.
 	% Forms.
 
@@ -237,7 +238,6 @@ instrument_node(Node0) ->
 			false ->
 				Node1
 		end,
-	% Node2.
 	case Annotation#annotation.modify of
 		true ->
 			instrument_expression(Node2, Annotation);
@@ -333,15 +333,32 @@ instrument_expression(Term, Annotation) ->
 			end,
 			Term,
 			DictSubs),
+	PosInfo = 
+		erl_syntax:get_pos(Term),
+	PosInfoToSend0 = 
+		case is_integer(PosInfo) of 
+			true -> 
+				PosInfo;
+			false ->
+				0 
+		end,
+	io:format("PosInfo: ~p\n", [PosInfo]),
+	PosInfoToSend = 
+		erl_syntax:integer(PosInfoToSend0),
+	BeginExpMessage = 
+		build_send(
+			[
+				erl_syntax:atom(begin_exp), 
+				erl_syntax:integer(Annotation#annotation.id),
+				erl_syntax:atom(erl_syntax:type(Term)),
+				PosInfoToSend,
+				erl_syntax:string(get_pp(Annotation#annotation.id))
+			]),
+	% io:format("Message: ~p\n", [BeginExpMessage]),
 	erl_syntax:block_expr(
 		[	
-			build_send(
-				[
-					erl_syntax:atom(begin_exp), 
-					erl_syntax:integer(Annotation#annotation.id),
-					erl_syntax:atom(erl_syntax:type(Term))
-				]),	
-			% TODO: COuld be simplified. For instance the matching of vars could be done in a single expression, i.e. [OriVar1, .., OriVar2] = [AuxVar1, .., AuxVar2]
+			BeginExpMessage,	
+			% TODO: Could be simplified. For instance the matching of vars could be done in a single expression, i.e. [OriVar1, .., OriVar2] = [AuxVar1, .., AuxVar2]
 			erl_syntax:match_expr(
 				FreeVariable,
 				erl_syntax:catch_expr(
@@ -723,9 +740,13 @@ not_instrumented_types() ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 unregister_servers() ->
+	catch unregister(dbg_ast_pp_server),
 	catch unregister(dbg_free_vars_server).
 
 register_servers() ->
+	register(
+		dbg_ast_pp_server, 
+		spawn(dbg_ast_pp_server, init, [])),
 	register(
 		dbg_free_vars_server, 
 		spawn(dbg_free_vars_server, init, [])).
@@ -734,7 +755,14 @@ get_free_variable() ->
 	dbg_free_vars_server ! {get_free_variable, self()},
 	receive 
 		Value ->
-			erl_syntax:variable(Value)
+			Value
+	end.
+
+get_pp(Node) ->
+	dbg_ast_pp_server ! {get_pp_node, self(), Node},
+	receive 
+		Value ->
+			Value
 	end.
 
 % bindings_to_ast({Type, ListVars}) -> 
