@@ -46,7 +46,9 @@
 	{	
 		id = 0, 
 		modify = undefined,  
-		bindings = undefined
+		bindings = undefined,
+		pp = "",
+		pos_info = 0
 	}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -61,6 +63,7 @@ parse_transform(Forms, _Options) ->
 		lists:map(
 			fun annotate_bindings_form/1,
 			Forms),
+	% io:format("Forms: ~p\n", [FormsAnnBindings]),
 	% Add annotations with identifier and instrumentation policy information
 	{FormsAnn, _} = 
 		lists:mapfoldl(
@@ -68,7 +71,7 @@ parse_transform(Forms, _Options) ->
 			0,
 			FormsAnnBindings),
 	dbg_free_vars_server!all_variables_added,
-	dbg_ast_pp_server!{store_ast, FormsAnn},
+	% dbg_ast_pp_server!{store_ast, FormsAnn},
 	% ?PVALUE("p", "Annotated", FormsAnn),
 	% Intrument the AST to send the traces
 	InstForms = 
@@ -81,7 +84,6 @@ parse_transform(Forms, _Options) ->
 		[erl_syntax:revert(IF) || IF <- InstForms],
 	% [io:format(erl_prettypr:format(F) ++ "\n") || F <- NewForms],
 	NewForms.
-	% Forms.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Annotate Bindings
@@ -124,13 +126,26 @@ annotate_node(Node0, CurrentNodeId) ->
 		erl_syntax:get_ann(Node0),
 	Modify = 
 		lists:member(Type, instrumented_types()),
+	PosInfo = 
+		case is_integer(erl_syntax:get_pos(Node0)) of 
+			true ->
+				erl_syntax:get_pos(Node0);
+			false ->
+				0 
+		end,
+	PP = 
+		erl_prettypr:format(Node0),
 	Ann = 
 		#annotation
 		{
 			id = CurrentNodeId,
 			modify = Modify,
-			bindings = Bindings
+			bindings = Bindings,
+			pp = PP,
+			pos_info = PosInfo
 		},
+	% io:format("POS: ~p\n", [Ann#annotation.pos_info]), 
+	% io:format("PP: ~s\n", [Ann#annotation.pp]), 
 	Node1 = 
 		case lists:member(Type, expressions_with_patterns()) of 
 			true -> 
@@ -199,10 +214,7 @@ disable_modify_node(Node) ->
 		[Ann] -> 
 			erl_syntax:set_ann(
 				Node,
-				[Ann#annotation{modify = false}])%;
-		% _ ->
-		% 	io:format("Node without annotations: ~p\n", [Node]), 
-		% 	Node
+				[Ann#annotation{modify = false}])
 	end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -333,28 +345,14 @@ instrument_expression(Term, Annotation) ->
 			end,
 			Term,
 			DictSubs),
-	PosInfo = 
-		erl_syntax:get_pos(Term),
-	PosInfoToSend0 = 
-		case is_integer(PosInfo) of 
-			true -> 
-				PosInfo;
-			false ->
-				0 
-		end,
-	io:format("PosInfo: ~p\n", [PosInfo]),
-	PosInfoToSend = 
-		erl_syntax:integer(PosInfoToSend0),
 	BeginExpMessage = 
 		build_send(
 			[
 				erl_syntax:atom(begin_exp), 
-				erl_syntax:integer(Annotation#annotation.id),
 				erl_syntax:atom(erl_syntax:type(Term)),
-				PosInfoToSend,
-				erl_syntax:string(get_pp(Annotation#annotation.id))
+				build_begin_common_info(Annotation)
 			]),
-	% io:format("Message: ~p\n", [BeginExpMessage]),
+	% io:format("Message: ~s\n", [erl_prettypr:format(BeginExpMessage)]),
 	erl_syntax:block_expr(
 		[	
 			BeginExpMessage,	
@@ -499,16 +497,16 @@ instrument_clause_body(Body) ->
 	++ 	instrument_clause_body_last(BodyLast).	
 
 instrument_clause_body_last(Exp) ->
-	FreeVariable = 
+	VariableResult = 
 		get_free_variable(),
 	[	
-		erl_syntax:match_expr(FreeVariable, Exp),
+		erl_syntax:match_expr(VariableResult, Exp),
 		build_send(
 			[
 				erl_syntax:atom(end_clause), 
-				FreeVariable
+				VariableResult
 			]),	
-		FreeVariable
+		VariableResult
 	].
 
 instrument_expression_with_clauses(Exp, case_expr) ->
@@ -624,7 +622,8 @@ build_clause_begin(Clause, PreviousPatterns) ->
 		++ 	[build_send([
 				erl_syntax:atom(begin_clause),
 				erl_syntax:list(PreviousClausesFailReasons),
-				get_vars_from_list(Patterns0, sets:new())
+				get_vars_from_list(Patterns0, sets:new()),
+				build_begin_common_info(Annotation)
 			])]
 		++ 	Body,
 	NewClause = 
@@ -740,13 +739,13 @@ not_instrumented_types() ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 unregister_servers() ->
-	catch unregister(dbg_ast_pp_server),
+	% catch unregister(dbg_ast_pp_server),
 	catch unregister(dbg_free_vars_server).
 
 register_servers() ->
-	register(
-		dbg_ast_pp_server, 
-		spawn(dbg_ast_pp_server, init, [])),
+	% register(
+	% 	dbg_ast_pp_server, 
+	% 	spawn(dbg_ast_pp_server, init, [])),
 	register(
 		dbg_free_vars_server, 
 		spawn(dbg_free_vars_server, init, [])).
@@ -758,12 +757,12 @@ get_free_variable() ->
 			Value
 	end.
 
-get_pp(Node) ->
-	dbg_ast_pp_server ! {get_pp_node, self(), Node},
-	receive 
-		Value ->
-			Value
-	end.
+% get_pp(Node) ->
+% 	dbg_ast_pp_server ! {get_pp_node, self(), Node},
+% 	receive 
+% 		Value ->
+% 			Value
+% 	end.
 
 % bindings_to_ast({Type, ListVars}) -> 
 % 	erl_syntax:tuple(
@@ -775,10 +774,31 @@ get_pp(Node) ->
 
 build_send(Msg) ->
 	erl_syntax:application(
-		erl_syntax:atom(erlang) , 
+		erl_syntax:atom(erlang), 
 		erl_syntax:atom(send), 
 		[
 			erl_syntax:atom(dbg_tracer),
 	 		erl_syntax:tuple(Msg)
 		]
 	).
+
+% erlang:process_info (self(), memory)
+build_memory_info() ->
+	erl_syntax:application(
+		erl_syntax:atom(erlang), 
+		erl_syntax:atom(process_info), 
+		[
+			erl_syntax:application(
+				erl_syntax:atom(self), 
+				[]),
+	 		erl_syntax:atom(memory)
+		]
+	).
+
+build_begin_common_info(Annotation) -> 
+	erl_syntax:tuple([
+		erl_syntax:integer(Annotation#annotation.id),
+		erl_syntax:integer(Annotation#annotation.pos_info),
+		erl_syntax:string(Annotation#annotation.pp),
+		build_memory_info()	
+	]).
