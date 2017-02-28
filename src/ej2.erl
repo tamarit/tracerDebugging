@@ -4,13 +4,7 @@
 main(X) ->
 	A = f(X),
 	B = g(X, A),
-	C = p(1000),
 	h(A, B).
-
-p(0) -> 
-	[];
-p(N) -> 
-	[N|p(N - 1)].
 
 f(A) ->
 	case A of 

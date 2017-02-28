@@ -413,7 +413,8 @@ build_case_catch_clause(no_error, _, VarsBound, VarsPatternCase) ->
   						lists:map(
   							fun erl_syntax:atom/1,
   							VarsBound)),
-  					VarsPatternCase
+  					VarsPatternCase,
+  					build_memory_info()
   				]), 
   			erl_syntax:tuple(
 			[
@@ -504,7 +505,8 @@ instrument_clause_body_last(Exp) ->
 		build_send(
 			[
 				erl_syntax:atom(end_clause), 
-				VariableResult
+				VariableResult,
+				build_memory_info()
 			]),	
 		VariableResult
 	].
