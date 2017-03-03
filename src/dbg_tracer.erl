@@ -58,7 +58,7 @@
 
 init()->
 	{ok, Df} = 
-		dets:open_file(traces, [{type, set}]),
+		dets:open_file(traces, [{type, set}, {auto_save, infinity}]),
 	State = 
 		#state{bd = Df},
 	loop(State).

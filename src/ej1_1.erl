@@ -1,10 +1,16 @@
--module(ej2).
+-module(ej1_1).
 -export([main/1]).
 
 main(X) ->
 	A = f(X),
 	B = g(X, A),
+	C = p(10000),
 	h(A, B).
+
+p(0) -> 
+	[];
+p(N) -> 
+	[N|p(N - 1)].
 
 f(A) ->
 	case A of 
