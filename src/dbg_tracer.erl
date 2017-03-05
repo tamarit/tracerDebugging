@@ -57,11 +57,11 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init()->
-	{ok, Df} = 
-		dets:open_file(traces, [{type, set}, {auto_save, infinity}]),
-	State = 
-		#state{bd = Df},
-	loop(State).
+% 	{ok, Df} = 
+% 		dets:open_file(traces, [{type, set}, {auto_save, infinity}]),
+	% State = 
+	% 	#state{bd = Df},
+	loop(#state{}).
 
 loop(State = #state{
 		id = Id, 
@@ -69,106 +69,115 @@ loop(State = #state{
 		environment = Env}) ->
 	receive
 		exit ->
-			io:format("Sale\n"),
-			io:format("Final Stack: ~w\n", [StackEC]),
-			io:format("Final Environment: ~p\n", [Env]),
-			dets:traverse(
-				traces,
-				fun(X) -> 
-					io:format("~p\n", [X]), 
-					continue 
-				end),
-			case StackEC of 
-				[] -> 
-					io:format("The execution finished succefully.\n");
-				_ -> 
-					io:format("An error occurred while executing the following expressions.\n"),
-					[case dets:lookup(traces, N) of 
-						[{N, {begin_exp, Type, {ASTId, Pos, PP, MemInfo}}}] -> 
-							io:format("~s\n\tin line ~p\n", [PP, Pos]);
-						[{N, {begin_clause, _, _, {ASTId, Pos, PP, MemInfo}}}] -> 
-							io:format("Clause:\n~s\n\tin line ~p\n", [PP, Pos])
-					 end
-					|| N <- StackEC]
-			end,
-			dets:close(traces),
-			file:delete("traces"),
+			io:format("---Ejecucion Correcta---\n"),
 			ok;
-		T = {begin_exp, Type, {ASTId, Pos, PP, MemInfo}} ->
-			% io:format("Entra trace BEGIN ~p\n", [Id]),
-			% Store partial trace info in the dets
-			dets:insert(traces, {Id, T}),
-			% Stack the expression 
-			NStackEC = 
-				[Id | StackEC],
-			% New trace id
-			NId = 
-				Id + 1,
-			% Si es llamada guardar en pila de llamadas y crear nuevo contexto de vars
-			NState = 
-				State#state{
-					id = NId,
-					stack_exp_clauses = NStackEC
-				},
-			loop(NState);
-		T = {end_exp, Value, BoundedVarsNames, BoundedVarsValues, MemInfoFinal} -> 
-			% io:format("Entra trace END\n"),
-			DictBindings = 
-				lists:zip(BoundedVarsNames, BoundedVarsValues),
-			% Unstack trace id
-			NStackEC = 
-				tl(StackEC),
-			% Complete the trace info on the dets
-			[{TraceId, {begin_exp, Type, {ASTId, Pos, PP, MemInfo}}}] = 
-				dets:lookup(traces, hd(StackEC)),
-			dets:insert(traces, {TraceId, {expression, ASTId, Type, Pos, PP, MemInfo, MemInfoFinal, Value, DictBindings, NStackEC}}),
-			% Store bindings in the environment table
-			NEnv = 
-					[{Var, {TraceId, VarValue}} || {Var, VarValue} <- DictBindings] 
-				++ 	Env,
-			% si es una llamada desapilar de pila de llamadas
-			% Si es funcion anonima o named func guardar el contexto actual
-			NState = 
-				State#state{
-					stack_exp_clauses = NStackEC,
-					environment = NEnv
-				},			
-			loop(NState);
-		T = {begin_clause, PrevClausesFailReason, DictBindings, Info} ->
-			% io:format("Entra trace BEGIN CLAUSE\n"),
-			% Store partial trace info in the dets
-			dets:insert(traces, {Id, T}),
-			% Stack the expression 
-			NStackEC = 
-				[Id | StackEC],
-			% Store bindings in the environment table
-			NEnv = 
-					[{Var, {Id, VarValue}} || {Var, VarValue} <- DictBindings] 
-				++ 	Env,
-			% New trace id
-			NId = 
-				Id + 1,
-			NState = 
-				State#state{
-					id = NId,
-					stack_exp_clauses = NStackEC,
-					environment = NEnv
-				},	
-			loop(NState);
-		T = {end_clause, Value, MemInfoFinal} ->
-			% io:format("Entra trace END CLAUSE\n"),
-			% Unstack trace id
-			NStackEC = 
-				tl(StackEC),
-			% Complete the trace info on the dets
-			[{TraceId, {begin_clause, PrevClausesFailReason, DictBindings, Info}}] = 
-				dets:lookup(traces, hd(StackEC)),
-			dets:insert(traces, {TraceId, {clause, PrevClausesFailReason, DictBindings, Info, MemInfoFinal, Value, NStackEC}}),
-			NState = 
-				State#state{
-					stack_exp_clauses = NStackEC
-				},
-			loop(NState)
+		error ->
+			io:format("---Ejecucion Con Errores---\n"),
+			ok;
+		Other -> 
+			?PVALUE("p","Todo Bien",{Other}),
+			loop(State)
+		% exit ->
+		% 	io:format("Sale\n"),
+		% 	io:format("Final Stack: ~w\n", [StackEC]),
+		% 	io:format("Final Environment: ~p\n", [Env]),
+		% 	dets:traverse(
+		% 		traces,
+		% 		fun(X) -> 
+		% 			io:format("~p\n", [X]), 
+		% 			continue 
+		% 		end),
+		% 	case StackEC of 
+		% 		[] -> 
+		% 			io:format("The execution finished succefully.\n");
+		% 		_ -> 
+		% 			io:format("An error occurred while executing the following expressions.\n"),
+		% 			[case dets:lookup(traces, N) of 
+		% 				[{N, {begin_exp, Type, {ASTId, Pos, PP, MemInfo}}}] -> 
+		% 					io:format("~s\n\tin line ~p\n", [PP, Pos]);
+		% 				[{N, {begin_clause, _, _, {ASTId, Pos, PP, MemInfo}}}] -> 
+		% 					io:format("Clause:\n~s\n\tin line ~p\n", [PP, Pos])
+		% 			 end
+		% 			|| N <- StackEC]
+		% 	end,
+		% 	dets:close(traces),
+		% 	file:delete("traces"),
+		% 	ok;
+		% T = {begin_exp, Type, {ASTId, Pos, PP, MemInfo}} ->
+		% 	% io:format("Entra trace BEGIN ~p\n", [Id]),
+		% 	% Store partial trace info in the dets
+		% 	dets:insert(traces, {Id, T}),
+		% 	% Stack the expression 
+		% 	NStackEC = 
+		% 		[Id | StackEC],
+		% 	% New trace id
+		% 	NId = 
+		% 		Id + 1,
+		% 	% Si es llamada guardar en pila de llamadas y crear nuevo contexto de vars
+		% 	NState = 
+		% 		State#state{
+		% 			id = NId,
+		% 			stack_exp_clauses = NStackEC
+		% 		},
+		% 	loop(NState);
+		% T = {end_exp, Value, BoundedVarsNames, BoundedVarsValues, MemInfoFinal} -> 
+		% 	% io:format("Entra trace END\n"),
+		% 	DictBindings = 
+		% 		lists:zip(BoundedVarsNames, BoundedVarsValues),
+		% 	% Unstack trace id
+		% 	NStackEC = 
+		% 		tl(StackEC),
+		% 	% Complete the trace info on the dets
+		% 	[{TraceId, {begin_exp, Type, {ASTId, Pos, PP, MemInfo}}}] = 
+		% 		dets:lookup(traces, hd(StackEC)),
+		% 	dets:insert(traces, {TraceId, {expression, ASTId, Type, Pos, PP, MemInfo, MemInfoFinal, Value, DictBindings, NStackEC}}),
+		% 	% Store bindings in the environment table
+		% 	NEnv = 
+		% 			[{Var, {TraceId, VarValue}} || {Var, VarValue} <- DictBindings] 
+		% 		++ 	Env,
+		% 	% si es una llamada desapilar de pila de llamadas
+		% 	% Si es funcion anonima o named func guardar el contexto actual
+		% 	NState = 
+		% 		State#state{
+		% 			stack_exp_clauses = NStackEC,
+		% 			environment = NEnv
+		% 		},			
+		% 	loop(NState);
+		% T = {begin_clause, PrevClausesFailReason, DictBindings, Info} ->
+		% 	% io:format("Entra trace BEGIN CLAUSE\n"),
+		% 	% Store partial trace info in the dets
+		% 	dets:insert(traces, {Id, T}),
+		% 	% Stack the expression 
+		% 	NStackEC = 
+		% 		[Id | StackEC],
+		% 	% Store bindings in the environment table
+		% 	NEnv = 
+		% 			[{Var, {Id, VarValue}} || {Var, VarValue} <- DictBindings] 
+		% 		++ 	Env,
+		% 	% New trace id
+		% 	NId = 
+		% 		Id + 1,
+		% 	NState = 
+		% 		State#state{
+		% 			id = NId,
+		% 			stack_exp_clauses = NStackEC,
+		% 			environment = NEnv
+		% 		},	
+		% 	loop(NState);
+		% T = {end_clause, Value, MemInfoFinal} ->
+		% 	% io:format("Entra trace END CLAUSE\n"),
+		% 	% Unstack trace id
+		% 	NStackEC = 
+		% 		tl(StackEC),
+		% 	% Complete the trace info on the dets
+		% 	[{TraceId, {begin_clause, PrevClausesFailReason, DictBindings, Info}}] = 
+		% 		dets:lookup(traces, hd(StackEC)),
+		% 	dets:insert(traces, {TraceId, {clause, PrevClausesFailReason, DictBindings, Info, MemInfoFinal, Value, NStackEC}}),
+		% 	NState = 
+		% 		State#state{
+		% 			stack_exp_clauses = NStackEC
+		% 		},
+		% 	loop(NState)
 	end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
