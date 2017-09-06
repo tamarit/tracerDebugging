@@ -1,5 +1,5 @@
 -module(adbg).
--export([run/0, prof/0, profiling/0]).
+-export([run/0, prof/0]).
 
 run() -> 
 	compile:file("ej1", [{parse_transform, transformer}]),
@@ -9,10 +9,9 @@ run() ->
 		ej1:main(0)
 	catch 
 		_:_ -> 
-			notify_all(list_processes(), error),
 			ok
 	end,
-	notify_all(list_processes(), exit),
+	dbg_tracer!exit,
 	ok.
 
 % run() -> 
@@ -75,14 +74,6 @@ init() ->
 	register_servers(),
 	ok.
 
-init(Name) -> 
- 	code:purge(Name),
- 	code:delete(Name),
-	compile:file(Name, [{parse_transform, transformer}]),
-	unregister_servers(),
-	register_servers(),
-	ok.
-
 prof() ->
 	init(),
     eprof:start(),
@@ -98,38 +89,14 @@ prof() ->
     eprof:analyze(total),
     eprof:stop(). 
 
-profiling() ->
-	init(op),
-    eprof:start(),
-    eprof:start_profiling([self(), dbg_tracer]),
-   	op(),
-    eprof:stop_profiling(),
-    eprof:analyze(total),
-    eprof:stop(). 
-
-op() ->
-    StartInput = os:timestamp(),
-    try 
-		op:main(1,1)
-	catch 
-		_:_ -> 
-			notify_all(list_processes(), error),
-			ok
-	end,
-	notify_all(list_processes(), exit),
-    io:format("Without: total time taken ~p seconds~n", [timer:now_diff(os:timestamp(), StartInput)/1000000]),
-    ok.
-
 main1() ->
     StartInput = os:timestamp(),
     try 
 		ej1_1:main(0)
 	catch 
 		_:_ -> 
-			notify_all(list_processes(), error),
 			ok
 	end,
-	notify_all(list_processes(), exit),
     io:format("Without: total time taken ~p seconds~n", [timer:now_diff(os:timestamp(), StartInput)/1000000]),
     ok.
 
@@ -139,18 +106,7 @@ main2() ->
 		ej1:main(0)
 	catch 
 		_:_ -> 
-			notify_all(list_processes(), error),
 			ok
 	end,
-	notify_all(list_processes(), exit),
     io:format("With: total time taken ~p seconds~n", [timer:now_diff(os:timestamp(), StartRes)/1000000]),
     ok.
-
-notify_all([], Msg) ->
-	ok;
-notify_all([T|L], Msg) ->
-	T ! Msg,
-	notify_all([L], Msg).
-
-list_processes() ->
- 	[dbg_tracer, dbg_free_vars_server].

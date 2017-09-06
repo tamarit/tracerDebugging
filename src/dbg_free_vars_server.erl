@@ -16,10 +16,6 @@ init() ->
 loop(State) ->
 	receive
 		exit ->
-			io:format("---Ejecucion Correcta---\n"),
-			ok;
-		error ->
-			io:format("---Ejecucion Con Errores---\n"),
 			ok;
 		{add_variable, Variable} ->
 			NewState = 

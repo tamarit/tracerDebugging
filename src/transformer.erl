@@ -109,28 +109,30 @@ annotate_form(Form, CurrentNodeId) ->
 		CurrentNodeId, 
 		Form).
 
-annotate_node(Node, CurrentNodeId) ->
+annotate_node(Node0, CurrentNodeId) ->
 	Type = 
-		erl_syntax:type(Node),
+		erl_syntax:type(Node0),
 	case Type of 
 		variable -> 
 			dbg_free_vars_server!
 				{
 					add_variable, 
-					erl_syntax:variable_literal(Node)
+					erl_syntax:variable_literal(Node0)
 				};
 		_ -> 
 			ok
 	end,
 	Bindings = 
-		erl_syntax:get_ann(Node),
+		erl_syntax:get_ann(Node0),
 	Modify = 
 		lists:member(Type, instrumented_types()),
-	
-	PosInfo = erl_syntax:get_pos(Node),
-
-	Node0 = erl_syntax:set_pos(Node, CurrentNodeId),
-	
+	PosInfo = 
+		case is_integer(erl_syntax:get_pos(Node0)) of 
+			true ->
+				erl_syntax:get_pos(Node0);
+			false ->
+				0 
+		end,
 	PP = 
 		erl_prettypr:format(Node0),
 	Ann = 
